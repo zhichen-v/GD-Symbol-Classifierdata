@@ -1,0 +1,47 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+.venv-finetune/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local tooling, editors, and OS files
+.codegraph/
+.cache/
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+
+# Legacy local OCR training data
+ocr-input/
+ocr-output/
+
+# Generated final-table OCR outputs
+final-table/output/
+
+# GD symbol classifier generated artifacts
+symbol-classifierdata/output/
+
+# Deprecated LoRA fine-tuning workspace
+finetune/
+
+# Training logs and experiment trackers
+wandb/
+swanlog/
+runs/

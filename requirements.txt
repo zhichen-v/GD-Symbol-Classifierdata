@@ -1,0 +1,13 @@
+# GLM-OCR currently requires a recent Transformers build.
+# See: https://huggingface.co/zai-org/GLM-OCR#transformers
+git+https://github.com/huggingface/transformers.git
+
+accelerate
+huggingface_hub
+hf_xet
+numpy
+Pillow
+python-dotenv
+safetensors
+torch
+torchvision
