@@ -93,6 +93,7 @@ def _normalize_latex_text(value):
     value = _normalize_numeric_commas(value)
     value = re.sub(r"(?i)(?:\\|/)pm", PLUS_MINUS, value)
     value = re.sub(r"(?i)(?:\\|/)mu", MICRO, value)
+    value = re.sub(r"(?i)(?:\\|/)phi\b", DIAMETER, value)
     value = re.sub(r"(?i)(?:\\|/)circ", DEGREE, value)
     value = re.sub(r"\^\s*\{\s*" + re.escape(DEGREE) + r"\s*\}", DEGREE, value)
     value = _normalize_latex_tolerance_scripts(value)
@@ -100,6 +101,7 @@ def _normalize_latex_text(value):
     value = value.replace("$", " ")
     value = value.replace("{", "").replace("}", "")
     value = value.replace("\\", "")
+    value = re.sub(r"(?i)\bphi\b(?=\s*\.?\d)", DIAMETER, value)
     value = _normalize_numeric_commas(value)
     return value
 
@@ -162,7 +164,7 @@ def _compact_spaced_digits(value):
             value,
         )
     value = re.sub(r"([+-])\s+(?=\.?\d)", r"\1", value)
-    value = re.sub(rf"{re.escape(DIAMETER)}\s+(?=\d)", DIAMETER, value)
+    value = re.sub(rf"{re.escape(DIAMETER)}\s+(?=\.?\d)", DIAMETER, value)
     return value
 
 
