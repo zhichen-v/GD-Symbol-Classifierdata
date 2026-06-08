@@ -1,0 +1,19 @@
+{
+  "source": "Project default tolerance profile derived from example.xls conventions",
+  "confidence": "medium",
+  "unit": "inch",
+  "tables": {
+    "linear_decimal": {
+      "2": {
+        "display": "±0.01(0.25)",
+        "plus": "0.01",
+        "minus": "0.01"
+      },
+      "3": {
+        "display": "±0.01(0.25)",
+        "plus": "0.01",
+        "minus": "0.01"
+      }
+    }
+  }
+}

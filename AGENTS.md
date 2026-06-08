@@ -17,7 +17,7 @@
 
 ## Project Goal
 
-This project fine-tunes `zai-org/GLM-OCR` with LoRA to recognize GD&T feature-control-frame symbols and output stable text tags.
+This project uses `zai-org/GLM-OCR` plus a dedicated closed-set GD&T symbol classifier to read full GD&T tables, normalize callouts, and write the final MIP Excel workbook.
 
 - GD&T characteristic symbols use tags such as `[GD_POSITION]` and `[GD_FLATNESS]`.
 - Maximum material condition uses `[M]`.
@@ -26,10 +26,11 @@ This project fine-tunes `zai-org/GLM-OCR` with LoRA to recognize GD&T feature-co
 ## Environment
 
 - Run normal OCR with `.venv` through `uv run ocr.py`.
-- Run data preparation, review, checks, training, and adapter evaluation with `.venv-finetune`.
+- Run data preparation, review, checks, classifier work, final-table OCR, and Excel post-processing with `.venv-finetune`.
 - Base model: `zai-org/GLM-OCR`, available in the local Hugging Face cache.
 - Fine-tuning framework: `finetune/LLaMA-Factory`.
 - Target GPU: NVIDIA GeForce RTX 4070 SUPER 12 GiB with BF16 support.
+- Excel post-processing depends on `xlrd`, `xlwt`, `xlutils`, and optional Windows Excel COM snapshot support through `pywin32`.
 
 ## Data Boundaries
 
@@ -41,7 +42,11 @@ This project fine-tunes `zai-org/GLM-OCR` with LoRA to recognize GD&T feature-co
 - `finetune/output/gdt-lora/`: formal LoRA output; currently empty and ready for training.
 - `finetune/output/gdt-lora-old/`: verified backup of the old pipeline-proof adapter; it does not represent the current reviewed dataset.
 - `ocr_final.py`: processes every image under `final-table/input`, crops cells only in memory, and writes only final Markdown/JSON files to `final-table/output`.
-- `ocr_final.py` defaults to safe mode. Named characteristics such as `FLATNESS` map deterministically to tags. Generic `GD`/`GD&T` rows output `[GD_REVIEW_REQUIRED]`; do not enable `--unsafe-lora-classification` for production.
+- `ocr_final.py` defaults to safe mode. Named characteristics such as `FLATNESS` map deterministically to tags. Generic `GD`/`GD&T` rows use the dedicated symbol classifier when available; rejected rows output `[GD_REVIEW_REQUIRED]`.
+- `src/`: production post-processing tools copied/adapted from the old `GDT-Extraction-FB` project. Keep workflow scripts and helper modules here.
+- `src/run_workflow.py`: consumes existing `final-table/output/*.json` table OCR results and writes final MIP Excel workbooks.
+- `src/run_ocr_workflow.py`: runs `ocr_final.py` first, then runs the JSON-to-Excel workflow.
+- `final-table/output/<TABLE_STEM>/`: generated normalized extraction JSON, debug JSON, and `MIP_filled.xls` workbooks. These are rebuildable outputs derived from `final-table/output/<TABLE_STEM>.json`.
 
 `prepare_dataset.py` intentionally includes only folders listed in its `CATEGORY_TAGS`. It excludes `final-table`, top-level images, and the old `symbol_crops.json` samples.
 
@@ -104,12 +109,34 @@ Confirm generated JSON contains no `final-table`, top-level `test*.png`, or `/cr
 
 `evaluate_crops.ps1` is currently not applicable because the old generated crop dataset is intentionally excluded. `evaluate_lora.ps1` currently reads only top-level files in its input directory, so do not present it as recursive category evaluation.
 
-For full grid tables, prefer the cell-by-cell LoRA pipeline:
+For full grid tables, prefer the cell-by-cell GLM-OCR plus classifier pipeline:
 
 ```powershell
 .\.venv-finetune\Scripts\python.exe .\ocr_final.py
 ```
 
 This workflow is the current minimum viable solution for full-table GD&T recognition. It assumes visible straight grid lines. Direct whole-image LoRA inference does not reliably emit GD&T tags because the symbols become too small at full-table scale.
+
+After `final-table/output/*.json` exists, generate final Excel files with:
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_workflow.py --no-snapshot
+```
+
+To run OCR and Excel generation together:
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --no-snapshot
+```
+
+Use `--no-snapshot` for deterministic automated checks. Snapshot generation depends on local Excel COM automation and may fail with a warning even when the workbook is valid.
+
+After changing `src/` post-processing, `final-table/output/*.json`, template files, or tolerance rules, verify with:
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_workflow.py --no-snapshot
+```
+
+The workflow must report `status: success`, workbook validation must pass, and each processed table should produce `final-table/output/<TABLE_STEM>/MIP_filled.xls`.
 
 The current LoRA is not a reliable GD&T symbol classifier. Its training used the LLaMA-Factory defaults `freeze_vision_tower: true` and `freeze_multi_modal_projector: true`, so it mainly learned output-token priors rather than new visual distinctions. The production path is a dedicated closed-set classifier operating on complete first feature-control-frame compartments, with an unknown/reject class and calibrated confidence threshold.
