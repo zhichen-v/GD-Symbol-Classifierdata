@@ -236,6 +236,8 @@ def crop_gd_symbol(cell: Image.Image) -> tuple[Image.Image, str] | None:
                 continue
 
             left = overlap_left + verticals[0]
+            if abs(left - overlap_left) > max(3, round(frame_height * 0.25)):
+                continue
             for raw_separator in verticals[1:]:
                 separator = overlap_left + raw_separator
                 compartment_width = separator - left
@@ -590,8 +592,21 @@ def classify_gd_tag(
     if predictions is None:
         predictions = predict_symbol(symbol, symbol_classifier)
     top1 = predictions[0]
-    detail = classifier_detail(predictions)
+    tag = gd_tag_for_classifier_label(str(top1["label"]))
+    if crop_source != "classifier_guided" and (top1["confidence"] < threshold or tag is None):
+        guided = classifier_guided_symbol_crop(cell, symbol_classifier)
+        if guided is not None:
+            guided_predictions = guided["top_predictions"]
+            guided_top1 = guided_predictions[0]
+            guided_tag = gd_tag_for_classifier_label(str(guided_top1["label"]))
+            if guided_top1["confidence"] >= threshold and guided_tag is not None:
+                symbol = guided["symbol"]
+                crop_source = guided["crop_source"]
+                predictions = guided_predictions
+                top1 = guided_top1
+                tag = guided_tag
 
+    detail = classifier_detail(predictions)
     if top1["confidence"] < threshold:
         return {
             "tag": None,
@@ -602,7 +617,6 @@ def classify_gd_tag(
             "top_predictions": predictions,
         }
 
-    tag = gd_tag_for_classifier_label(str(top1["label"]))
     if tag is None:
         return {
             "tag": None,
