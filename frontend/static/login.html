@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MIP Workflow Login</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260608-session-jobs" />
+    <link rel="stylesheet" href="/static/login.css?v=20260608-session-jobs" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <form class="login-panel" id="login-form">
+        <p class="eyebrow">Protected Console</p>
+        <h1>MIP Workflow Console</h1>
+        <label class="password-field">
+          <span>連接密碼</span>
+          <input id="password-input" type="password" autocomplete="current-password" autofocus />
+        </label>
+        <button class="primary-button" id="login-button" type="submit">進入</button>
+        <p class="login-message" id="login-message" aria-live="polite"></p>
+      </form>
+    </main>
+    <script src="/static/login.js?v=20260608-session-jobs" defer></script>
+  </body>
+</html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MIP Workflow Console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260608-preview-fix" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar" aria-label="Workflow status">
+        <div>
+          <p class="eyebrow">GD Symbol Classifier</p>
+          <h1>MIP Workflow Console</h1>
+        </div>
+        <div class="top-actions">
+          <div class="system-pill" id="system-pill">API 待連線</div>
+          <button class="ghost-button auth-button" type="button" id="logout-button" hidden>登出</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <form class="upload-tool" id="upload-form">
+          <div class="tool-head">
+            <div>
+              <p class="eyebrow">Input</p>
+              <h2>表格截圖</h2>
+            </div>
+            <button class="ghost-button" type="button" id="clear-button">清空</button>
+          </div>
+
+          <label class="drop-zone" id="drop-zone">
+            <input id="file-input" type="file" accept="image/*" multiple />
+            <span class="drop-mark">+</span>
+            <span class="drop-title">選擇或拖放多張表格圖片</span>
+            <span class="drop-subtitle" id="file-summary">尚未選擇檔案</span>
+          </label>
+
+          <div class="file-list" id="file-list" aria-live="polite"></div>
+
+          <button class="primary-button" id="submit-button" type="submit">
+            開始處理
+          </button>
+        </form>
+
+        <section class="jobs-area" aria-label="Jobs">
+          <div class="jobs-head">
+            <div>
+              <p class="eyebrow">Output</p>
+              <h2>工作紀錄</h2>
+            </div>
+            <button class="ghost-button" type="button" id="refresh-button">更新</button>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <div class="empty-grid"></div>
+            <p>尚無工作紀錄</p>
+          </div>
+
+          <div class="job-list" id="job-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=20260608-preview-fix" defer></script>
+  </body>
+</html>

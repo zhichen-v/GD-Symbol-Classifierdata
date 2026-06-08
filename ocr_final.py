@@ -82,11 +82,27 @@ def group_line_centers(values: np.ndarray, minimum_coverage: float) -> list[int]
     return groups
 
 
+def merge_close_lines(lines: list[int], minimum_gap: int = 5) -> list[int]:
+    if not lines:
+        return []
+
+    merged = []
+    cluster = [lines[0]]
+    for line in lines[1:]:
+        if line - cluster[-1] <= minimum_gap:
+            cluster.append(line)
+            continue
+        merged.append(round(sum(cluster) / len(cluster)))
+        cluster = [line]
+    merged.append(round(sum(cluster) / len(cluster)))
+    return merged
+
+
 def detect_grid(image: Image.Image) -> tuple[list[int], list[int]]:
     grayscale = np.asarray(image.convert("L"))
     dark_pixels = grayscale < 150
-    x_lines = group_line_centers(dark_pixels.mean(axis=0), minimum_coverage=0.7)
-    y_lines = group_line_centers(dark_pixels.mean(axis=1), minimum_coverage=0.7)
+    x_lines = merge_close_lines(group_line_centers(dark_pixels.mean(axis=0), minimum_coverage=0.7))
+    y_lines = merge_close_lines(group_line_centers(dark_pixels.mean(axis=1), minimum_coverage=0.7))
     if len(x_lines) < 3 or len(y_lines) < 3:
         raise ValueError(
             f"Could not detect a table grid: {len(x_lines)} vertical and {len(y_lines)} horizontal lines."
@@ -96,7 +112,10 @@ def detect_grid(image: Image.Image) -> tuple[list[int], list[int]]:
 
 def crop_cell(image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
     left, top, right, bottom = box
-    cell = image.crop((left + 2, top + 2, right - 2, bottom - 2))
+    if right <= left or bottom <= top:
+        return Image.new("RGB", (1, 1), "white")
+    inset = 2 if right - left > 4 and bottom - top > 4 else 0
+    cell = image.crop((left + inset, top + inset, right - inset, bottom - inset))
     return ImageOps.expand(cell, border=8, fill="white")
 
 
@@ -159,6 +178,16 @@ def normalize_symbol_crop(symbol: Image.Image, size: int = 128) -> Image.Image |
     return canvas
 
 
+def symbol_crop_insets(frame_height: int) -> list[tuple[int, int, int, int]]:
+    edge_inset = max(1, round(frame_height * 0.08))
+    left_inset = max(2, round(frame_height * 0.16))
+    fallback = max(1, round(frame_height * 0.1))
+    return [
+        (left_inset, edge_inset, edge_inset, edge_inset),
+        (fallback, fallback, fallback, fallback),
+    ]
+
+
 def crop_gd_symbol(cell: Image.Image) -> Image.Image | None:
     grayscale = np.asarray(cell.convert("L"))
     dark = grayscale < 190
@@ -203,19 +232,20 @@ def crop_gd_symbol(cell: Image.Image) -> Image.Image | None:
                 if not 0.4 <= aspect_ratio <= 2.2:
                     continue
 
-                border = max(1, round(frame_height * 0.1))
-                crop_box = (
-                    left + border,
-                    top + border,
-                    separator - border,
-                    bottom - border,
-                )
-                if crop_box[2] - crop_box[0] < 3 or crop_box[3] - crop_box[1] < 3:
-                    continue
+                for left_inset, top_inset, right_inset, bottom_inset in symbol_crop_insets(frame_height):
+                    crop_box = (
+                        left + left_inset,
+                        top + top_inset,
+                        separator - right_inset,
+                        bottom - bottom_inset,
+                    )
+                    if crop_box[2] - crop_box[0] < 3 or crop_box[3] - crop_box[1] < 3:
+                        continue
 
-                normalized = normalize_symbol_crop(cell.crop(crop_box))
-                if normalized:
-                    candidates.append((abs(aspect_ratio - 1.4), normalized))
+                    normalized = normalize_symbol_crop(cell.crop(crop_box))
+                    if normalized:
+                        candidates.append((abs(aspect_ratio - 1.4), normalized))
+                        break
 
     if not candidates:
         return None
@@ -296,38 +326,120 @@ def load_symbol_classifier(checkpoint_path: Path, requested_device: str) -> dict
     }
 
 
+def classifier_detail(predictions: list[dict[str, float | str]]) -> str:
+    if not predictions:
+        return ""
+    top1 = predictions[0]
+    if len(predictions) == 1:
+        return f"{top1['label']} {top1['confidence']:.3f}"
+    top2 = predictions[1]
+    return (
+        f"{top1['label']} {top1['confidence']:.3f}; "
+        f"top2 {top2['label']} {top2['confidence']:.3f}"
+    )
+
+
 def classify_gd_tag(
     cell: Image.Image,
     symbol_classifier: dict,
     threshold: float,
-) -> tuple[str | None, str]:
+) -> dict:
     symbol = crop_gd_symbol(cell)
     if symbol is None:
-        return None, "symbol crop not found"
+        return {
+            "tag": None,
+            "message": "symbol crop not found",
+            "reason": "symbol_crop_not_found",
+            "symbol": None,
+            "top_predictions": [],
+        }
 
     inputs = symbol_classifier["transform"](symbol).unsqueeze(0).to(symbol_classifier["device"])
     with torch.inference_mode():
         probabilities = torch.softmax(symbol_classifier["model"](inputs), dim=1)[0].cpu()
 
     classes = symbol_classifier["classes"]
-    top_count = min(2, len(classes))
+    top_count = min(5, len(classes))
     top_values, top_indices = torch.topk(probabilities, k=top_count)
-    top1_label = classes[int(top_indices[0])]
-    top1_confidence = float(top_values[0])
-    top2_label = classes[int(top_indices[1])] if top_count > 1 else ""
-    top2_confidence = float(top_values[1]) if top_count > 1 else 0.0
-    detail = (
-        f"{top1_label} {top1_confidence:.3f}; "
-        f"top2 {top2_label} {top2_confidence:.3f}"
+    predictions = [
+        {
+            "label": classes[int(index)],
+            "confidence": float(value),
+        }
+        for value, index in zip(top_values, top_indices)
+    ]
+    top1 = predictions[0]
+    detail = classifier_detail(predictions)
+
+    if top1["confidence"] < threshold:
+        return {
+            "tag": None,
+            "message": f"classifier below threshold ({detail})",
+            "reason": "below_threshold",
+            "symbol": symbol,
+            "top_predictions": predictions,
+        }
+
+    tag = gd_tag_for_classifier_label(str(top1["label"]))
+    if tag is None:
+        return {
+            "tag": None,
+            "message": f"classifier rejected ({detail})",
+            "reason": "unknown",
+            "symbol": symbol,
+            "top_predictions": predictions,
+        }
+    return {
+        "tag": tag,
+        "message": detail,
+        "reason": "accepted",
+        "symbol": symbol,
+        "top_predictions": predictions,
+    }
+
+
+def write_classifier_debug(
+    debug_dir: Path,
+    row_number: int,
+    source_image: Path,
+    characteristic: str,
+    specification: str,
+    specification_cell: Image.Image,
+    classification: dict,
+) -> None:
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"row{row_number:03d}"
+    cell_name = f"{prefix}_spec_cell.png"
+    symbol_name = f"{prefix}_symbol_crop.png" if classification.get("symbol") is not None else None
+
+    specification_cell.save(debug_dir / cell_name)
+    symbol = classification.get("symbol")
+    if symbol is not None:
+        symbol.save(debug_dir / symbol_name)
+
+    payload = {
+        "row_number": row_number,
+        "source_image": source_image.as_posix(),
+        "characteristic": characteristic,
+        "specification": specification,
+        "reason": classification.get("reason"),
+        "message": classification.get("message"),
+        "top_predictions": classification.get("top_predictions", []),
+        "spec_cell_image": cell_name,
+        "symbol_crop_image": symbol_name,
+    }
+    (debug_dir / f"{prefix}.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
 
-    if top1_confidence < threshold:
-        return None, f"classifier below threshold ({detail})"
 
-    tag = gd_tag_for_classifier_label(top1_label)
-    if tag is None:
-        return None, f"classifier rejected ({detail})"
-    return tag, detail
+def clear_classifier_debug(debug_dir: Path) -> None:
+    if not debug_dir.is_dir():
+        return
+    for path in debug_dir.glob("row[0-9][0-9][0-9]*"):
+        if path.is_file():
+            path.unlink()
 
 
 def find_column(header: list[str], name: str) -> int:
@@ -405,6 +517,7 @@ def process_image(
     relative_path = image_path.relative_to(INPUT_DIR)
     markdown_path = (OUTPUT_DIR / relative_path).with_suffix(".md")
     json_path = (OUTPUT_DIR / relative_path).with_suffix(".json")
+    classifier_debug_dir = json_path.with_name(f"{json_path.stem}_classifier_debug")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
 
     if (
@@ -415,6 +528,8 @@ def process_image(
     ):
         print(f"Skipping existing output: {relative_path}")
         return
+
+    clear_classifier_debug(classifier_debug_dir)
 
     with Image.open(image_path) as source:
         image = source.convert("RGB")
@@ -456,11 +571,13 @@ def process_image(
                 results[row_index][specification_column],
             )
         elif normalized in GENERIC_GD_CHARACTERISTICS and symbol_classifier and specification_cell:
-            tag, response = classify_gd_tag(
+            classification = classify_gd_tag(
                 specification_cell,
                 symbol_classifier,
                 classifier_threshold,
             )
+            tag = classification["tag"]
+            response = classification["message"]
             if tag:
                 results[row_index][specification_column] = apply_classified_gd_tag(
                     tag,
@@ -468,6 +585,15 @@ def process_image(
                 )
                 print(f"  Row {row_index + 1}: classified {tag} from symbol classifier ({response})")
             else:
+                write_classifier_debug(
+                    classifier_debug_dir,
+                    row_index + 1,
+                    relative_path,
+                    characteristic,
+                    results[row_index][specification_column],
+                    specification_cell,
+                    classification,
+                )
                 results[row_index][specification_column] = (
                     f"{GD_REVIEW_TAG} {results[row_index][specification_column]}".strip()
                 )
