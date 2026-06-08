@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -271,6 +272,82 @@ def crop_gd_symbol(cell: Image.Image) -> tuple[Image.Image, str] | None:
         height,
         minimum_line_width,
     )
+
+
+def crop_gd_frame(cell: Image.Image) -> tuple[Image.Image, dict] | None:
+    grayscale = np.asarray(cell.convert("L"))
+    dark = grayscale < 190
+    height, width = dark.shape
+    minimum_line_width = max(10, round(width * 0.08))
+
+    horizontal_lines = []
+    for y in range(height):
+        run = longest_true_run(dark[y])
+        if run and run[1] - run[0] + 1 >= minimum_line_width:
+            horizontal_lines.append((y, run[0], run[1]))
+
+    candidates = []
+    for top_index, (top, top_left, top_right) in enumerate(horizontal_lines):
+        for bottom, bottom_left, bottom_right in horizontal_lines[top_index + 1 :]:
+            frame_height = bottom - top
+            if frame_height < 8:
+                continue
+            if frame_height > min(90, round(height * 0.9)):
+                break
+
+            overlap_left = max(top_left, bottom_left)
+            overlap_right = min(top_right, bottom_right)
+            if overlap_right - overlap_left + 1 < minimum_line_width:
+                continue
+
+            frame = dark[top : bottom + 1, overlap_left : overlap_right + 1]
+            vertical_coverage = frame.mean(axis=0)
+            top_touch = frame[: min(3, frame.shape[0])].any(axis=0)
+            bottom_touch = frame[-min(3, frame.shape[0]) :].any(axis=0)
+            verticals = true_run_centers(
+                (vertical_coverage >= 0.55) & top_touch & bottom_touch
+            )
+            if len(verticals) < 2:
+                continue
+
+            line_left = min(top_left, bottom_left)
+            line_right = max(top_right, bottom_right)
+            left = min(line_left, overlap_left + verticals[0])
+            right = max(line_right, overlap_left + verticals[-1])
+            frame_width = right - left
+            if frame_width < max(12, round(frame_height * 1.2)):
+                continue
+            aspect_ratio = frame_width / frame_height
+            if not 1.2 <= aspect_ratio <= 12:
+                continue
+
+            padding = max(1, round(frame_height * 0.06))
+            crop_box = (
+                max(0, left - padding),
+                max(0, top - padding),
+                min(cell.width, right + padding + 1),
+                min(cell.height, bottom + padding + 1),
+            )
+            crop = cell.crop(crop_box).convert("RGB")
+            if crop.width < 8 or crop.height < 8:
+                continue
+            score = (-frame_width, abs(aspect_ratio - 4.0))
+            candidates.append(
+                (
+                    score,
+                    crop,
+                    {
+                        "source": "closed_frame",
+                        "bbox": list(crop_box),
+                        "frame_vertical_count": len(verticals),
+                    },
+                )
+            )
+
+    if not candidates:
+        return None
+    _, crop, metadata = min(candidates, key=lambda candidate: candidate[0])
+    return crop, metadata
 
 
 def crop_gd_symbol_from_partial_frame(
@@ -682,11 +759,103 @@ def clear_classifier_debug(debug_dir: Path) -> None:
 
 
 def find_column(header: list[str], name: str) -> int:
-    target = name.upper()
+    target = normalize_header_key(name)
     for index, cell in enumerate(header):
-        if target in cell.upper():
+        if target in normalize_header_key(cell):
             return index
     raise ValueError(f"Required table column not found: {name}")
+
+
+def resolve_table_columns(header: list[str]) -> tuple[int, int]:
+    characteristic_column = find_column_or_none(header, "CHARACTERISTIC")
+    specification_column = find_column_or_none(header, "SPECIFICATION")
+
+    if characteristic_column is None and specification_column is not None and specification_column > 0:
+        characteristic_column = specification_column - 1
+    if specification_column is None and characteristic_column is not None and characteristic_column + 1 < len(header):
+        specification_column = characteristic_column + 1
+
+    location_column = find_column_or_none(header, "LOCATION")
+    if location_column is not None:
+        if characteristic_column is None and location_column + 1 < len(header):
+            characteristic_column = location_column + 1
+        if specification_column is None and location_column + 2 < len(header):
+            specification_column = location_column + 2
+
+    bubble_column = find_column_or_none(header, "BUBBLE")
+    if bubble_column is not None:
+        if characteristic_column is None and bubble_column + 2 < len(header):
+            characteristic_column = bubble_column + 2
+        if specification_column is None and bubble_column + 3 < len(header):
+            specification_column = bubble_column + 3
+
+    if characteristic_column is None or specification_column is None:
+        if len(header) == 4:
+            characteristic_column = 2 if characteristic_column is None else characteristic_column
+            specification_column = 3 if specification_column is None else specification_column
+        elif len(header) == 5 and not normalize_header_key(header[0]):
+            characteristic_column = 3 if characteristic_column is None else characteristic_column
+            specification_column = 4 if specification_column is None else specification_column
+
+    missing = []
+    if characteristic_column is None:
+        missing.append("CHARACTERISTIC")
+    if specification_column is None:
+        missing.append("SPECIFICATION")
+    if missing:
+        raise ValueError(
+            f"Required table column not found: {', '.join(missing)}. OCR header={header!r}"
+        )
+
+    return characteristic_column, specification_column
+
+
+def resolve_table_header(results: list[list[str]]) -> tuple[int, int, int]:
+    candidates = []
+    for row_index, header in enumerate(results[: min(4, len(results))]):
+        try:
+            characteristic_column, specification_column = resolve_table_columns(header)
+        except ValueError:
+            candidates.append(header)
+            continue
+        return row_index, characteristic_column, specification_column
+
+    raise ValueError(f"Required table header not found. OCR header candidates={candidates!r}")
+
+
+def find_column_or_none(header: list[str], name: str) -> int | None:
+    try:
+        return find_column(header, name)
+    except ValueError:
+        return None
+
+
+def normalize_header_key(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(text or "").upper())
+
+
+def remove_noise_rows(
+    results: list[list[str]],
+    cells: list[list[Image.Image | None]],
+) -> tuple[list[list[str]], list[list[Image.Image | None]], int]:
+    if not results:
+        return results, cells, 0
+
+    filtered_results = [results[0]]
+    filtered_cells = [cells[0]]
+    skipped = 0
+    for row, cell_row in zip(results[1:], cells[1:]):
+        if is_noise_row(row):
+            skipped += 1
+            continue
+        filtered_results.append(row)
+        filtered_cells.append(cell_row)
+    return filtered_results, filtered_cells, skipped
+
+
+def is_noise_row(row: list[str]) -> bool:
+    text = " ".join(str(cell or "") for cell in row)
+    return not bool(re.search(r"[A-Za-z0-9Øµμ°]", text))
 
 
 def is_gd_characteristic(text: str) -> bool:
@@ -745,6 +914,58 @@ def write_markdown(rows: list[list[str]], output_path: Path) -> None:
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def image_asset_paths(json_path: Path) -> tuple[Path, Path]:
+    return (
+        json_path.with_name(f"{json_path.stem}_image_assets.json"),
+        json_path.with_name(f"{json_path.stem}_assets"),
+    )
+
+
+def clear_image_assets(manifest_path: Path, assets_dir: Path) -> None:
+    manifest_path.unlink(missing_ok=True)
+    if assets_dir.is_dir():
+        shutil.rmtree(assets_dir)
+
+
+def save_gd_frame_asset(
+    assets_dir: Path,
+    row_index: int,
+    source_image: Path,
+    specification_column: int,
+    specification_cell: Image.Image,
+) -> dict | None:
+    crop_result = crop_gd_frame(specification_cell)
+    if crop_result is None:
+        return None
+
+    crop, metadata = crop_result
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    image_name = f"row{row_index + 1:03d}_gd_frame.png"
+    image_path = assets_dir / image_name
+    crop.save(image_path)
+
+    return {
+        "visual_index": row_index,
+        "row_number": row_index + 1,
+        "column": specification_column,
+        "kind": "gd_frame",
+        "path": image_path.name,
+        "directory": assets_dir.name,
+        "width": crop.width,
+        "height": crop.height,
+        "source_image": source_image.as_posix(),
+        **metadata,
+    }
+
+
+def write_image_asset_manifest(manifest_path: Path, source_image: Path, assets: list[dict]) -> None:
+    payload = {
+        "source_image": source_image.as_posix(),
+        "assets": assets,
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def process_image(
     image_path: Path,
     processor,
@@ -757,6 +978,7 @@ def process_image(
     markdown_path = (OUTPUT_DIR / relative_path).with_suffix(".md")
     json_path = (OUTPUT_DIR / relative_path).with_suffix(".json")
     classifier_debug_dir = json_path.with_name(f"{json_path.stem}_classifier_debug")
+    image_manifest_path, image_assets_dir = image_asset_paths(json_path)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
 
     if (
@@ -769,6 +991,7 @@ def process_image(
         return
 
     clear_classifier_debug(classifier_debug_dir)
+    clear_image_assets(image_manifest_path, image_assets_dir)
 
     with Image.open(image_path) as source:
         image = source.convert("RGB")
@@ -792,11 +1015,17 @@ def process_image(
         ]
         for row in cells
     ]
-    characteristic_column = find_column(results[0], "CHARACTERISTIC")
-    specification_column = find_column(results[0], "SPECIFICATION")
+    header_row_index, characteristic_column, specification_column = resolve_table_header(results)
+    if header_row_index:
+        print(f"  Header detected at row {header_row_index + 1}; skipped {header_row_index} leading noise row(s)")
+        results = results[header_row_index:]
+        cells = cells[header_row_index:]
+    results, cells, skipped_rows = remove_noise_rows(results, cells)
+    if skipped_rows:
+        print(f"  Skipped {skipped_rows} noise row(s)")
+    image_assets = []
     for row_index in range(1, len(results)):
         characteristic = results[row_index][characteristic_column]
-        normalized = normalized_characteristic(characteristic)
         results[row_index][specification_column] = apply_diameter_marker(
             characteristic,
             normalize_diameter_symbols(results[row_index][specification_column]),
@@ -804,62 +1033,46 @@ def process_image(
         if not is_gd_characteristic(characteristic):
             continue
         specification_cell = cells[row_index][specification_column]
-        if normalized in EXPECTED_GD_TAGS:
-            results[row_index][specification_column] = apply_expected_gd_tag(
-                characteristic,
-                results[row_index][specification_column],
-            )
-        elif normalized in GENERIC_GD_CHARACTERISTICS and symbol_classifier and specification_cell:
-            classification = classify_gd_tag(
+        if specification_cell:
+            asset = save_gd_frame_asset(
+                image_assets_dir,
+                row_index,
+                relative_path,
+                specification_column,
                 specification_cell,
-                symbol_classifier,
-                classifier_threshold,
             )
-            tag = classification["tag"]
-            response = classification["message"]
-            if tag:
-                results[row_index][specification_column] = apply_classified_gd_tag(
-                    tag,
-                    results[row_index][specification_column],
-                )
-                print(f"  Row {row_index + 1}: classified {tag} from symbol classifier ({response})")
-            else:
-                write_classifier_debug(
-                    classifier_debug_dir,
-                    row_index + 1,
-                    relative_path,
-                    characteristic,
-                    results[row_index][specification_column],
-                    specification_cell,
-                    classification,
-                )
-                results[row_index][specification_column] = (
-                    f"{GD_REVIEW_TAG} {results[row_index][specification_column]}".strip()
-                )
-                print(f"  Row {row_index + 1}: symbol classifier rejected ({response})")
-        elif normalized in GENERIC_GD_CHARACTERISTICS:
-            results[row_index][specification_column] = (
-                f"{GD_REVIEW_TAG} {results[row_index][specification_column]}".strip()
-            )
+            if asset:
+                image_assets.append(asset)
+                print(f"  Row {row_index + 1}: saved GD frame image asset")
+                continue
+        results[row_index][specification_column] = (
+            f"{GD_REVIEW_TAG} {results[row_index][specification_column]}".strip()
+        )
+        print(f"  Row {row_index + 1}: GD frame image asset not found")
         results[row_index][specification_column] = normalize_diameter_symbols(
             results[row_index][specification_column]
         )
 
     json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_image_asset_manifest(image_manifest_path, relative_path, image_assets)
     write_markdown(results, markdown_path)
     print(f"Saved: {markdown_path.relative_to(ROOT)}")
     print(f"Saved: {json_path.relative_to(ROOT)}")
+    print(f"Saved: {image_manifest_path.relative_to(ROOT)}")
 
 
 def output_is_current(image_path: Path) -> bool:
     relative_path = image_path.relative_to(INPUT_DIR)
     markdown_path = (OUTPUT_DIR / relative_path).with_suffix(".md")
     json_path = (OUTPUT_DIR / relative_path).with_suffix(".json")
+    image_manifest_path, _ = image_asset_paths(json_path)
     return (
         markdown_path.is_file()
         and json_path.is_file()
+        and image_manifest_path.is_file()
         and markdown_path.stat().st_mtime >= image_path.stat().st_mtime
         and json_path.stat().st_mtime >= image_path.stat().st_mtime
+        and image_manifest_path.stat().st_mtime >= image_path.stat().st_mtime
     )
 
 
@@ -900,7 +1113,10 @@ def main() -> int:
         for image_path in image_paths:
             relative_path = image_path.relative_to(INPUT_DIR)
             (OUTPUT_DIR / relative_path).with_suffix(".md").unlink(missing_ok=True)
-            (OUTPUT_DIR / relative_path).with_suffix(".json").unlink(missing_ok=True)
+            json_path = (OUTPUT_DIR / relative_path).with_suffix(".json")
+            json_path.unlink(missing_ok=True)
+            image_manifest_path, image_assets_dir = image_asset_paths(json_path)
+            clear_image_assets(image_manifest_path, image_assets_dir)
 
     pending_images = [image_path for image_path in image_paths if not output_is_current(image_path)]
     if not pending_images:
@@ -909,11 +1125,7 @@ def main() -> int:
 
     symbol_classifier = None
     if not args.disable_symbol_classifier:
-        checkpoint_path = args.symbol_classifier_checkpoint.resolve()
-        if not checkpoint_path.is_file():
-            raise FileNotFoundError(f"Symbol classifier checkpoint not found: {checkpoint_path}")
-        print(f"Loading GD symbol classifier: {checkpoint_path}")
-        symbol_classifier = load_symbol_classifier(checkpoint_path, args.symbol_classifier_device)
+        print("GD image passthrough mode: symbol classifier is skipped.")
 
     local_files_only = not args.download_base_model
     if local_files_only:

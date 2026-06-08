@@ -313,13 +313,38 @@ def _unilateral_match(text, anchored=False):
     pattern = (
         rf"{prefix}(?P<nom>{NUMBER})(?:{DEGREE})?"
         rf"(?:\s+(?P<plus_spaced>\+?{NUMBER})|\s*(?P<plus_signed>\+{NUMBER}))"
-        rf"\s*/?\s*(?P<minus>[+-]?{NUMBER})(?:{DEGREE})?$"
+        rf"(?:\s*/\s*|\s+)(?P<minus>[+-]?{NUMBER})(?:{DEGREE})?$"
     )
     return re.search(pattern, text)
 
 
 def _unilateral_plus(match):
     return match.group("plus_spaced") or match.group("plus_signed")
+
+
+def _single_sided_tolerance_match(text):
+    return re.search(
+        rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})(?P<degree>{DEGREE})?\s*(?P<tol>[+-]{NUMBER})(?:{DEGREE})?$",
+        text,
+    )
+
+
+def _unsigned_bilateral_tolerance_match(text):
+    patterns = (
+        rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})(?P<degree>{DEGREE})?\s*(?::|\s+)\s*(?P<tol>{NUMBER})(?:{DEGREE})?$",
+        rf"^(?P<prefix>.*?)(?P<nom>(?:\d+\.\d+|\.\d+))(?P<degree>{DEGREE})?(?P<tol>\.\d+)(?:{DEGREE})?$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match and not _prefix_contains_numeric_value(match.group("prefix")):
+            return match
+    return None
+
+
+def _prefix_contains_numeric_value(prefix):
+    value = re.sub(r"\b\d+\s*X\b", "", prefix or "", flags=re.IGNORECASE)
+    value = value.replace(DIAMETER, " ")
+    return bool(re.search(NUMBER, value))
 
 
 def _nominal_token(text):
@@ -402,7 +427,7 @@ def _parse_gdt(text, characteristic, unit):
             "tolerance_type": "gdt",
             "metric_tolerance": metric,
             "excel_specification": " ".join(spec_parts),
-            "excel_tolerance": "-",
+            "excel_tolerance": limit_tolerance_text(number_match.group(0), unit),
             "requires_default_tolerance": False,
         }
     )
@@ -477,13 +502,13 @@ def _parse_surface_roughness(text, characteristic):
                 "tolerance_type": "roughness_range",
                 "metric_tolerance": f"Ra {ra_low}-{ra_high}",
                 "excel_specification": roughness,
-                "excel_tolerance": "-",
+                "excel_tolerance": limit_tolerance_text(high),
                 "requires_default_tolerance": False,
             }
         )
         return result
 
-    if single_match and any(token in text.upper() for token in ("RMS", "RA", "RZ")):
+    if single_match and (_has_roughness_token(text) or _is_simple_roughness_value(text)):
         value = single_match.group("value")
         ra = microinch_to_ra_text(value)
         roughness = f"\u2264{value} RMS(Ra {ra})"
@@ -494,7 +519,7 @@ def _parse_surface_roughness(text, characteristic):
                 "tolerance_type": "roughness_limit",
                 "metric_tolerance": f"Ra {ra}",
                 "excel_specification": text,
-                "excel_tolerance": "-",
+                "excel_tolerance": limit_tolerance_text(value),
                 "requires_default_tolerance": False,
             }
         )
@@ -508,6 +533,20 @@ def _parse_surface_roughness(text, characteristic):
         }
     )
     return result
+
+
+def _has_roughness_token(text):
+    return any(token in text.upper() for token in ("RMS", "RA", "RZ"))
+
+
+def _is_simple_roughness_value(text):
+    return bool(
+        re.fullmatch(
+            rf"\s*(?:\u2264|<=)?\s*{NUMBER}\s*(?:\u00b5\s*m|um|micron|microinch|uin)?\s*",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _parse_linear(text, characteristic, unit):
@@ -529,6 +568,38 @@ def _parse_linear(text, characteristic, unit):
                 "metric_tolerance": f"{metric_value_text(plus[1:], unit, places=_metric_places(plus, is_tolerance=True))}/{metric_value_text(minus[1:], unit, places=_metric_places(minus, is_tolerance=True))}",
                 "excel_specification": _append_trailing_note(
                     _format_nominal(prefix, nominal, unit),
+                    trailing_note,
+                ),
+                "excel_tolerance": excel_tolerance,
+                "requires_default_tolerance": False,
+            }
+        )
+        return result
+
+    single_sided = _single_sided_tolerance_match(core_text)
+    if single_sided:
+        prefix = _clean_prefix(single_sided.group("prefix"))
+        is_angle = bool(single_sided.group("degree"))
+        value_unit = "degree" if is_angle else unit
+        nominal = single_sided.group("nom")
+        signed_tolerance = single_sided.group("tol")
+        if signed_tolerance.startswith("+"):
+            plus = signed_tolerance
+            minus = "-0"
+        else:
+            plus = "+0"
+            minus = signed_tolerance
+        excel_tolerance = _format_unilateral_tolerance(plus, minus, value_unit)
+        result.update(
+            {
+                "nominal": f"{prefix}{nominal}",
+                "tolerance": f"{plus}/{minus}",
+                "tolerance_type": "unilateral",
+                "unit": value_unit,
+                "metric_nominal": metric_value_text(nominal, value_unit, places=_metric_places(nominal)),
+                "metric_tolerance": f"{metric_value_text(plus[1:], value_unit, places=_metric_places(plus, is_tolerance=True))}/{metric_value_text(minus[1:], value_unit, places=_metric_places(minus, is_tolerance=True))}",
+                "excel_specification": _append_trailing_note(
+                    _format_nominal(prefix, nominal, value_unit, suffix=DEGREE if is_angle else ""),
                     trailing_note,
                 ),
                 "excel_tolerance": excel_tolerance,
@@ -569,8 +640,38 @@ def _parse_linear(text, characteristic, unit):
         )
         return result
 
+    unsigned_bilateral = _unsigned_bilateral_tolerance_match(core_text)
+    if unsigned_bilateral:
+        prefix = _clean_prefix(unsigned_bilateral.group("prefix"))
+        is_angle = bool(unsigned_bilateral.group("degree"))
+        value_unit = "degree" if is_angle else unit
+        nominal = unsigned_bilateral.group("nom")
+        tolerance = unsigned_bilateral.group("tol")
+        tolerance_suffix = DEGREE if is_angle else ""
+        excel_tolerance = f"{PLUS_MINUS}{tolerance}{tolerance_suffix}"
+        if value_unit == "inch":
+            excel_tolerance = f"{excel_tolerance}({inch_to_metric_text(tolerance, places=_metric_places(tolerance, is_tolerance=True))})"
+        result.update(
+            {
+                "nominal": f"{prefix}{nominal}",
+                "tolerance": f"{PLUS_MINUS}{tolerance}",
+                "tolerance_type": "bilateral_inferred",
+                "unit": value_unit,
+                "metric_nominal": metric_value_text(nominal, value_unit, places=_metric_places(nominal)),
+                "metric_tolerance": metric_value_text(tolerance, value_unit, places=_metric_places(tolerance, is_tolerance=True)),
+                "excel_specification": _append_trailing_note(
+                    _format_nominal(prefix, nominal, value_unit, suffix=DEGREE if is_angle else ""),
+                    trailing_note,
+                ),
+                "excel_tolerance": excel_tolerance,
+                "requires_default_tolerance": False,
+            }
+        )
+        result["warnings"].append("Inferred bilateral tolerance from adjacent nominal/tolerance OCR text.")
+        return result
+
     nominal_match = re.search(rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})$", core_text)
-    if nominal_match:
+    if nominal_match and len(re.findall(NUMBER, core_text)) == 1:
         prefix = _clean_prefix(nominal_match.group("prefix"))
         nominal = nominal_match.group("nom")
         result.update(
@@ -640,6 +741,35 @@ def _format_gdt_tolerance(text):
     number_text = match.group(0)
     display = number_text if not number_text.startswith(".") else f"0{number_text}"
     return text.replace(number_text, display, 1)
+
+
+def limit_tolerance_text(number_text, unit=""):
+    display = number_text if not number_text.startswith(".") else f"0{number_text}"
+    tolerance = f"\u2264{display}"
+    if unit == "inch":
+        tolerance = f"{tolerance}({inch_to_metric_text(number_text, places=_metric_places(number_text, is_tolerance=True))})"
+    return tolerance
+
+
+def first_limit_tolerance_text(text, unit=""):
+    number_text = first_limit_number_text(text)
+    if not number_text:
+        return ""
+    return limit_tolerance_text(number_text, unit=unit)
+
+
+def first_limit_number_text(text):
+    value = "" if text is None else str(text)
+    for match in re.finditer(NUMBER, value):
+        if _is_quantity_prefix(value, match.end()):
+            continue
+        return match.group(0)
+    return ""
+
+
+def _is_quantity_prefix(value, match_end):
+    remainder = value[match_end:].lstrip()
+    return remainder[:1].upper() == "X"
 
 
 def _format_unilateral_tolerance(plus, minus, unit):

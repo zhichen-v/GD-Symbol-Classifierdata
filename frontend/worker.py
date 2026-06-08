@@ -276,7 +276,11 @@ def _image_paths(input_dir: Path) -> list[Path]:
 
 
 def _workflow_json_paths(ocr_output_dir: Path) -> list[Path]:
-    return sorted(path for path in ocr_output_dir.glob("*.json") if path.is_file())
+    return sorted(
+        path
+        for path in ocr_output_dir.glob("*.json")
+        if path.is_file() and not path.name.lower().endswith("_image_assets.json")
+    )
 
 
 def emit_progress(progress: int, step: str, status: str = "running") -> None:

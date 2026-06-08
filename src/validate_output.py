@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import sys
 
@@ -38,6 +39,7 @@ def validate_output(template_path, output_path, debug_path, example_path=None):
         spec = result_sheet.cell_value(rowx, 3)
         tolerance = result_sheet.cell_value(rowx, 4)
         equipment = result_sheet.cell_value(rowx, 8)
+        specification_image = expected.get("specification_image")
 
         if int(item) != expected["item"]:
             errors.append(f"Row {rowx + 1}: item mismatch {item!r} != {expected['item']!r}")
@@ -45,8 +47,10 @@ def validate_output(template_path, output_path, debug_path, example_path=None):
             errors.append(f"Row {rowx + 1}: drawing sheet mismatch")
         if zone != expected["zone"]:
             errors.append(f"Row {rowx + 1}: zone mismatch {zone!r} != {expected['zone']!r}")
-        if not spec:
+        if not spec and not specification_image:
             errors.append(f"Row {rowx + 1}: specification is blank")
+        if specification_image and not os.path.isfile(specification_image):
+            errors.append(f"Row {rowx + 1}: specification image not found: {specification_image}")
         if not tolerance:
             errors.append(f"Row {rowx + 1}: tolerance is blank")
         if tolerance == "UNDETERMINED":

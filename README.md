@@ -1,35 +1,30 @@
 # GLM-OCR GD&T Table OCR
 
-此專案的目標是把 GD&T 表格圖片轉成最終 MIP Excel。現行流程分成兩段：
+這個專案把 GD&T 表格截圖轉成最終 MIP Excel。現行穩定版不再嘗試解析 GD 符號本身，而是：
 
-1. `ocr_final.py` 讀取 `final-table/input/` 的表格圖片，使用 `zai-org/GLM-OCR` 與 GD&T symbol classifier 產生 Markdown/JSON。
-2. `src/run_workflow.py` 讀取已處理好的 `final-table/output/*.json`，沿用舊專案 `GDT-Extraction-FB` 的後處理邏輯，補公差、判斷量測設備、寫入 `template.xls`，產生最終 `MIP_filled.xls`。
+1. `ocr_final.py` 用 `zai-org/GLM-OCR` 做 cell-by-cell OCR。
+2. 對 `GD`、`GD&T`、`FLATNESS`、`TRUE POSITION` 等 GD characteristic 列，直接擷取完整 feature-control-frame 圖片，輸出 sidecar image assets。
+3. `src/run_workflow.py` 把 OCR JSON 轉成 extraction schema，尺寸/粗糙度等文字列走 parser，GD 圖片列跳過 parser。
+4. `src/fill_template.py` 把 GD frame 圖片貼進 `template.xls` 的 Specification 欄，產生 `MIP_filled.xls`。
 
-如果只想從現有 JSON 產 Excel，不需要重新跑 OCR。
+如果只想從現有 OCR JSON 產 Excel，不需要重新跑 OCR。
 
-## 目前架構
+## 主要檔案
 
-- `ocr_final.py`：正式表格 OCR 入口。只把 cell crop 放在記憶體中處理，輸出 `.md` 與 `.json`。
-- `src/run_workflow.py`：以現有 `final-table/output/*.json` 產生最終 Excel。
-- `src/run_ocr_workflow.py`：先執行 `ocr_final.py`，再執行 JSON 到 Excel 的 workflow。
-- `src/glm_table_adapter.py`：把 GLM-OCR 的表格陣列 JSON 轉成舊 pipeline 使用的 extraction schema。
-- `src/parse_specification.py`：規格文字、GD&T tag、LaTeX 公差、單位、公差欄位解析。
-- `src/fill_template.py`：沿用 `template.xls` 樣式填入 MIP 結果。
-- `src/validate_output.py`：檢查輸出的 workbook 是否符合 template 與 debug 資料。
+- `ocr_final.py`：正式 full-table OCR 入口，輸出 `.md`、`.json`、`*_image_assets.json` 與 `*_assets/*.png`。
+- `src/run_workflow.py`：讀取 OCR JSON，產生 final extraction/debug/workbook。
+- `src/run_ocr_workflow.py`：先跑 `ocr_final.py`，再跑 Excel workflow。
+- `src/glm_table_adapter.py`：把 GLM-OCR table array JSON 轉成 workflow extraction schema，並讀取 GD image sidecar。
+- `src/run_pipeline.py`：處理 parser、tolerance、equipment，GD image rows 直接 passthrough。
+- `src/fill_template.py`：寫入 `template.xls`，並把 GD frame 圖片貼到 Specification 欄。
+- `src/validate_output.py`：驗證 workbook 與 debug output。
+- `frontend/`：本機 web UI，可批次上傳多張表格圖片並下載 Excel。
 - `final-table/input/`：正式要辨識的表格圖片。
-- `final-table/output/`：OCR 產生的 `.md`、`.json`，以及 workflow 產生的子資料夾。
-- `symbol-classifierdata/`：GD&T characteristic symbol classifier 的資料、split、訓練與評估腳本。
+- `final-table/output/`：OCR 與 Excel workflow artifacts。
 
-重要規則：
+## 環境安裝
 
-- GD&T characteristic 在 OCR JSON 中使用 `[GD_POSITION]`、`[GD_FLATNESS]` 這類 tag。
-- 最大實體狀態使用 `[M]`。
-- 直徑不是 GD characteristic；直徑要保留為字面符號 `Ø`，不要輸出 `[DIAMETER]`。
-- 自動檢查只能確認格式可處理，不能證明 OCR 標籤語意一定正確。
-
-## 安裝環境
-
-建議在專案根目錄建立並使用 `.venv-finetune`：
+在專案根目錄建立 `.venv-finetune`：
 
 ```powershell
 py -m venv .venv-finetune
@@ -38,52 +33,66 @@ py -m venv .venv-finetune
 .\.venv-finetune\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-`requirements.txt` 包含 GLM-OCR 所需套件，以及 Excel `.xls` 套版輸出所需的 `xlrd`、`xlwt`、`xlutils`、`pywin32`。
-
-若新裝置有 NVIDIA GPU，建議先依 PyTorch 官方指令安裝符合 CUDA 版本的 `torch` / `torchvision`，再安裝 `requirements.txt`。否則可能裝到 CPU 版，速度會很慢。
+`requirements.txt` 包含 GLM-OCR 與 `.xls` 後處理所需套件。若是新 GPU 環境，建議先依 PyTorch 官方指令安裝符合 CUDA 版本的 `torch` / `torchvision`，再安裝 `requirements.txt`。
 
 ## Hugging Face Token
 
-複製範本：
+第一次使用或需要下載 base model 時，複製 `.env`：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-然後在 `.env` 填入自己的 token：
+填入：
 
 ```dotenv
 HF_TOKEN=hf_your_token_here
 HF_XET_HIGH_PERFORMANCE=1
 ```
 
-`.env` 會被 `.gitignore` 排除，不要提交實際 token。
+`.env` 已被 `.gitignore` 排除，不要提交實際 token。
+
+## OCR 加 Excel 一次跑
+
+把表格圖片放到 `final-table/input/`，然後執行：
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --force
+```
+
+第一次需要允許下載 GLM-OCR base model 時：
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --force --download-base-model
+```
+
+若要跳過 Excel snapshot，適合自動檢查：
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --force --no-snapshot
+```
+
+輸出範例：
+
+```text
+final-table/output/test.json
+final-table/output/test_image_assets.json
+final-table/output/test_assets/row005_gd_frame.png
+final-table/output/test/MIP_filled.xls
+final-table/output/test/test_extraction.json
+final-table/output/test/extraction_debug.json
+final-table/output/test/MIP_filled_MIP_Results_snapshot.png
+```
 
 ## 只用現有 JSON 產 Excel
 
-這是目前最常用、也最安全的後處理入口。它不會重新跑 OCR，只處理 `final-table/output/*.json`：
+不重新跑 OCR，只處理 `final-table/output/*.json`：
 
 ```powershell
 .\.venv-finetune\Scripts\python.exe .\src\run_workflow.py --no-snapshot
 ```
 
-預設輸入：
-
-```text
-final-table/output/*.json
-```
-
-每個 JSON 會產生一個同名子資料夾，例如：
-
-```text
-final-table/output/test/MIP_filled.xls
-final-table/output/test/test_extraction.json
-final-table/output/test/extraction_debug.json
-```
-
-`--no-snapshot` 會跳過 Excel COM 截圖，適合自動驗證。若不加 `--no-snapshot`，workflow 會嘗試產生 workbook snapshot PNG；截圖失敗會列為 warning，不代表 workbook 寫入失敗。
-
-常用參數：
+指定單一 JSON：
 
 ```powershell
 .\.venv-finetune\Scripts\python.exe .\src\run_workflow.py `
@@ -92,99 +101,52 @@ final-table/output/test/extraction_debug.json
   --no-snapshot
 ```
 
-## OCR 加 Excel 一次跑
+`run_workflow.py` 會自動排除 `*_image_assets.json`、`*_extraction.json`、`extraction_debug.json`。
 
-如果要先更新 OCR JSON，再產 Excel：
+## GD Image Passthrough
 
-```powershell
-.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --no-snapshot
+GD characteristic rows 會直接擷取完整 GD frame 圖片並貼到 Excel，不再把符號裁成單一 crop，也不再由 classifier 判斷 `[GD_POSITION]` 之類標籤。
+
+這個策略的目的：
+
+- 避免 GD symbol classifier/parser 誤判。
+- 保留原圖的 GD 符號、數值、datum 與 modifiers。
+- 讓 Excel Specification 欄呈現與原表格一致的視覺結果。
+
+非 GD characteristic 不會進入截圖流程。例如 `SURFACE FINISH`、`SURFACE ROUGHNESS`、`DIMENSION` 仍維持 OCR 文字與後處理 parser。
+
+要調整貼到 Excel 的 GD 圖片大小，改：
+
+```python
+# src/fill_template.py
+SPECIFICATION_IMAGE_CELL_SCALE = 0.7
 ```
 
-如果要強制重跑 OCR：
+數字越小圖片越小；位置會自動置中。
 
-```powershell
-.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --force --no-snapshot
-```
+## 文字後處理規則
 
-第一次需要允許下載 GLM-OCR base model 時：
+非 GD image rows 仍會做文字解析與正規化：
 
-```powershell
-.\.venv-finetune\Scripts\python.exe .\src\run_ocr_workflow.py --force --download-base-model --no-snapshot
-```
-
-`run_ocr_workflow.py` 會呼叫 `ocr_final.py`，所以仍需要 `symbol-classifierdata/output/best.pt` 存在，除非另外傳給 `ocr_final.py` 的相關參數。
-
-## GLM JSON 後處理規則
-
-`src/run_workflow.py` 會先把 GLM-OCR 的表格陣列 JSON 轉成舊專案 pipeline 的 extraction schema。轉換時依 header 名稱找欄位，所以 JSON 有沒有 `BUBBLE` 欄都可以。
-
-後處理會處理這些 GLM 常見格式：
-
-- `[GD_POSITION]`、`[GD_FLATNESS]` 等 tag 轉成 Excel specification 欄使用的 GD&T 符號。
-- `[M]` 轉成 `(M)`。
-- `Ø`、`⌀`、`∅`、`ø` 等直徑符號正規化為 `Ø`。
+- `Ø`、`⌀`、`∅`、`ø` 正規化為 `Ø`。
 - `\pm`、`/pm`、`$ \pm0.02 $` 轉成 `±0.02`。
 - `\mu`、`/mu` 轉成 `µ`。
-- LaTeX 上下標公差，例如 `^{+0.05}`、`_{0}^{3+0.01}`，會攤平成 parser 可處理的 unilateral tolerance。
+- LaTeX 上下標公差會攤平成 parser 可處理格式。
 - `17.9 0/-0.04`、`0.50/-0.04` 會拆成 specification 與 tolerance。
-- 單邊公差輸出一定補齊正負兩側：`+0.2` 會輸出 `+0.2/-0`，`-0.2` 會輸出 `+0/-0.2`。`±0.2` 本身已表示正負兩側，維持 `±0.2`。
+- 單邊公差補齊正負兩側：`+0.2` -> `+0.2/-0`，`-0.2` -> `+0/-0.2`。
+- `±0.2` 本身代表正負兩側，維持 `±0.2`。
 
-例子：
-
-```text
-[GD_POSITION] 0.02 A B C  ->  ⌖ 0.02 A B C
-6X Ø 0.3 $ \pm 0.05 $    ->  specification: 6X Ø0.3, tolerance: ±0.05
-17.9 0/-0.04             ->  specification: 17.9, tolerance: +0/-0.04
-2X 1.5 +0.02/0           ->  specification: 2X1.5, tolerance: +0.02/-0
-```
-
-## Symbol Classifier
-
-到新裝置後，`symbol-classifierdata/output/` 通常不會帶過去，需重新建立 split、檢查資料、訓練與評估。
-
-建立 grouped split：
-
-```powershell
-.\.venv-finetune\Scripts\python.exe .\symbol-classifierdata\build_grouped_splits.py
-```
-
-檢查資料：
-
-```powershell
-.\.venv-finetune\Scripts\python.exe .\symbol-classifierdata\train_classifier.py --check-data --batch-size 32
-```
-
-訓練：
-
-```powershell
-.\.venv-finetune\Scripts\python.exe .\symbol-classifierdata\train_classifier.py `
-  --data-root .\symbol-classifierdata `
-  --splits-dir .\symbol-classifierdata\splits `
-  --output-dir .\symbol-classifierdata\output `
-  --model resnet18 `
-  --epochs 30 `
-  --batch-size 32
-```
-
-評估：
-
-```powershell
-.\.venv-finetune\Scripts\python.exe .\symbol-classifierdata\evaluate_classifier.py `
-  --data-root .\symbol-classifierdata `
-  --split .\symbol-classifierdata\splits\test.csv `
-  --checkpoint .\symbol-classifierdata\output\best.pt `
-  --threshold 0.90
-```
+直徑不是 GD characteristic；不要輸出 `[DIAMETER]`，要保留字面 `Ø`。
 
 ## 驗證
 
-修改 `src/` 後處理、`final-table/output/*.json`、`template.xls`、`example.xls` 或 tolerance profile 後，至少跑：
+修改 `src/` 後處理、OCR JSON、`template.xls`、`example.xls` 或 tolerance profile 後，至少跑：
 
 ```powershell
 .\.venv-finetune\Scripts\python.exe .\src\run_workflow.py --no-snapshot
 ```
 
-成功時 summary 應為：
+成功時 summary 應該包含：
 
 ```json
 {
@@ -192,20 +154,28 @@ final-table/output/test/extraction_debug.json
 }
 ```
 
-且每個 processed table 的 `workbook_validation.status` 應為 `success`。
+每個 processed table 的 `workbook_validation.status` 也應為 `success`，並產生 `MIP_filled.xls`。
 
-目前已用現有 5 個 JSON 驗證過：
+如果需要檢查預覽圖，不加 `--no-snapshot`。snapshot 依賴本機 Excel COM；若 snapshot 失敗但 workbook validation 成功，通常是 preview 問題，不代表 Excel 檔壞掉。
 
-```text
-final-table/output/test/MIP_filled.xls
-final-table/output/test2/MIP_filled.xls
-final-table/output/test3/MIP_filled.xls
-final-table/output/test4/MIP_filled.xls
-final-table/output/test5/MIP_filled.xls
+## 前端介面
+
+啟動本機 web UI：
+
+```powershell
+.\.venv-finetune\Scripts\python.exe -m uvicorn frontend.app:app --host 127.0.0.1 --port 8000
 ```
 
-## 直徑符號
+開啟：
 
-`ocr_final.py` 與後處理都會盡量把 GLM-OCR 常見的直徑符號變體正規化成 `Ø`。
+```text
+http://127.0.0.1:8000
+```
 
-如果 OCR 完全漏掉直徑符號，純文字後處理無法可靠補回。此情況應回到圖片或 classifier/偵測器檢查，不要把 `DIAMETER` 混回 GD characteristic classifier。
+更多設定見 `frontend/README.md`。
+
+## Classifier 與 Fine-tuning
+
+目前正式 Excel 輸出不依賴 LoRA 或 GD symbol classifier。舊 LoRA 對 full-table GD&T 不可靠，因為 full-table 符號太小；symbol classifier 相關資料與腳本仍保留作研究、備援或後續實驗。
+
+沒有明確需求時，不要重訓模型，也不要把 classifier 結果當成 GD label 語意正確的證明。

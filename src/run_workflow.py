@@ -103,7 +103,12 @@ def _resolve_inputs(inputs, input_glob):
 
 def _is_source_table_json(path):
     name = Path(path).name.lower()
-    return name.endswith(".json") and name not in {"extraction_debug.json"} and not name.endswith("_extraction.json")
+    return (
+        name.endswith(".json")
+        and name not in {"extraction_debug.json"}
+        and not name.endswith("_extraction.json")
+        and not name.endswith("_image_assets.json")
+    )
 
 
 def _paths_for_input(table_path, output_root):

@@ -30,10 +30,12 @@ def resolve_tolerance(parsed, tolerance_profile=None):
 def _resolve_from_profile(parsed, profile):
     if parsed.get("kind") != "linear" or not parsed.get("nominal"):
         return None
-    if not _profile_unit_matches(parsed, profile):
+
+    unit_profile = _profile_for_unit(parsed, profile)
+    if not unit_profile:
         return None
 
-    table = (profile.get("tables") or {}).get("linear_decimal") or {}
+    table = (unit_profile.get("tables") or {}).get("linear_decimal") or {}
     nominal_digits = decimal_places(parsed["nominal"])
     row = table.get(str(nominal_digits))
     if not row:
@@ -41,9 +43,9 @@ def _resolve_from_profile(parsed, profile):
 
     if row.get("display"):
         return {
-            "source": profile.get("source", "provided_tolerance_profile"),
+            "source": _profile_value(unit_profile, row, "source", "provided_tolerance_profile"),
             "final_tolerance": row["display"],
-            "confidence": profile.get("confidence", "medium"),
+            "confidence": _profile_value(unit_profile, row, "confidence", "medium"),
             "missing_evidence": [],
             "rule": f"linear_decimal[{nominal_digits}]",
         }
@@ -53,26 +55,64 @@ def _resolve_from_profile(parsed, profile):
     if plus == minus:
         tolerance = f"{PLUS_MINUS}{plus}"
         if parsed.get("unit") == "inch":
-            tolerance = f"{tolerance}({inch_to_metric_text(plus)})"
+            tolerance = f"{tolerance}({_inch_tolerance_metric_text(plus)})"
     else:
         tolerance = f"+{plus}/-{minus}"
         if parsed.get("unit") == "inch":
-            tolerance = f"+{plus}({inch_to_metric_text(plus)})/-{minus}({inch_to_metric_text(minus)})"
+            tolerance = (
+                f"+{plus}({_inch_tolerance_metric_text(plus)})"
+                f"/-{minus}({_inch_tolerance_metric_text(minus)})"
+            )
 
     return {
-        "source": profile.get("source", "provided_tolerance_profile"),
+        "source": _profile_value(unit_profile, row, "source", "provided_tolerance_profile"),
         "final_tolerance": tolerance,
-        "confidence": "medium",
+        "confidence": _profile_value(unit_profile, row, "confidence", "medium"),
         "missing_evidence": [],
         "rule": f"linear_decimal[{nominal_digits}]",
     }
 
 
+def _profile_for_unit(parsed, profile):
+    parsed_unit = _normalize_unit_alias(parsed.get("unit"))
+    unit_tables = profile.get("unit_tables") or profile.get("units") or {}
+
+    if isinstance(unit_tables, dict) and unit_tables:
+        for unit_name, unit_profile in unit_tables.items():
+            if _normalize_unit_alias(unit_name) != parsed_unit:
+                continue
+            if not isinstance(unit_profile, dict):
+                continue
+            merged = dict(profile)
+            merged.update(unit_profile)
+            merged["unit"] = _normalize_unit_alias(unit_name)
+            return merged
+        return None
+
+    if _profile_unit_matches(parsed, profile):
+        return profile
+    return None
+
+
+def _profile_value(profile, row, key, default):
+    return row.get(key) or profile.get(key) or default
+
+
+def _inch_tolerance_metric_text(number_text):
+    places = 3 if decimal_places(number_text) >= 3 else 2
+    return inch_to_metric_text(number_text, places=places)
+
+
 def _profile_unit_matches(parsed, profile):
-    profile_unit = (profile.get("unit") or "").strip().lower()
-    parsed_unit = (parsed.get("unit") or "").strip().lower()
+    profile_unit = _normalize_unit_alias(profile.get("unit"))
+    parsed_unit = _normalize_unit_alias(parsed.get("unit"))
     if not profile_unit or not parsed_unit:
         return True
+    return profile_unit == parsed_unit
+
+
+def _normalize_unit_alias(unit):
+    value = (unit or "").strip().lower()
     aliases = {
         "in": "inch",
         "imperial": "inch",
@@ -80,4 +120,4 @@ def _profile_unit_matches(parsed, profile):
         "millimeter": "metric",
         "millimetre": "metric",
     }
-    return aliases.get(profile_unit, profile_unit) == aliases.get(parsed_unit, parsed_unit)
+    return aliases.get(value, value)

@@ -2,9 +2,11 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 import xlrd
 import xlwt
+from PIL import Image
 from xlutils.copy import copy as copy_workbook
 
 
@@ -24,6 +26,8 @@ COL_IPQC = 6
 COL_OGQC = 7
 COL_EQUIPMENT = 8
 COL_PRODUCTION = 9
+
+SPECIFICATION_IMAGE_CELL_SCALE = 0.7
 
 
 def fill_template(template_path, output_rows, output_path):
@@ -62,6 +66,7 @@ def fill_template(template_path, output_rows, output_path):
         _write_data(rb, ws, rs, style_cache, rowx, COL_PRODUCTION, row.get("production_section", "MCM"), offset, visible_count)
 
     _restore_static_region(rb, ws, rs, static_style_cache)
+    _insert_specification_images(ws, output_rows, output_path)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     wb.save(output_path)
     return output_path
@@ -80,6 +85,7 @@ def _clear_and_hide_row(rb, ws, rs, style_cache, rowx, offset, data_cols):
     row.hidden = True
     row.height = 0
     row.height_mismatch = True
+    _sync_row_height_pixels(row)
 
 
 def _show_data_row(ws, rs, rowx, offset, total_rows):
@@ -90,11 +96,75 @@ def _show_data_row(ws, rs, rowx, offset, total_rows):
     if source_info:
         row.height = source_info.height
         row.height_mismatch = True
+        _sync_row_height_pixels(row)
 
 
 def _write_data(rb, ws, rs, style_cache, rowx, colx, value, offset, total_rows):
-    style = _style_for_data_cell(rb, rs, style_cache, offset, total_rows, colx)
+    wrap_text = isinstance(value, str) and "\n" in value
+    style = _style_for_data_cell(rb, rs, style_cache, offset, total_rows, colx, wrap_text=wrap_text)
     ws.write(rowx, colx, value, style)
+
+
+def _sync_row_height_pixels(row):
+    if row.height <= 0:
+        row._Row__height_in_pixels = 0
+        return
+    points = row.height / 20.0
+    row._Row__height_in_pixels = max(1, int(round(points * 83.0 / 50.0 + 2.0 / 5.0)))
+
+
+def _insert_specification_images(ws, output_rows, output_path):
+    bitmap_dir = Path(output_path).with_name("excel-bitmaps")
+    for index, row in enumerate(output_rows, start=1):
+        image_path = row.get("specification_image")
+        if not image_path:
+            continue
+        source_path = Path(image_path)
+        if not source_path.is_file():
+            continue
+        rowx = DATA_START_ROW + index - 1
+        cell_width = ws.col_width(COL_SPECIFICATION)
+        cell_height = ws.row_height(rowx)
+        bitmap_dir.mkdir(parents=True, exist_ok=True)
+        bitmap_path = bitmap_dir / f"row{rowx + 1:03d}_specification.bmp"
+        width, height = _prepare_excel_bitmap(
+            source_path,
+            bitmap_path,
+            max_width=max(8, round(cell_width * SPECIFICATION_IMAGE_CELL_SCALE)),
+            max_height=max(8, round(cell_height * SPECIFICATION_IMAGE_CELL_SCALE)),
+        )
+        x_offset = max(1, round((cell_width - width) / 2))
+        y_offset = max(1, round((cell_height - height) / 2))
+        ws.insert_bitmap(str(bitmap_path), rowx, COL_SPECIFICATION, x=x_offset, y=y_offset)
+
+
+def _prepare_excel_bitmap(source_path, bitmap_path, max_width, max_height):
+    image = Image.open(source_path).convert("RGB")
+    image = _trim_image_whitespace(image)
+    scale = min(max_width / image.width, max_height / image.height)
+    width = max(1, round(image.width * scale))
+    height = max(1, round(image.height * scale))
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
+    image.save(bitmap_path, "BMP")
+    return width, height
+
+
+def _trim_image_whitespace(image):
+    grayscale = image.convert("L")
+    pixels = grayscale.load()
+    dark_points = [
+        (x, y)
+        for y in range(image.height)
+        for x in range(image.width)
+        if pixels[x, y] < 245
+    ]
+    if not dark_points:
+        return image
+    left = max(0, min(x for x, _ in dark_points) - 2)
+    top = max(0, min(y for _, y in dark_points) - 2)
+    right = min(image.width, max(x for x, _ in dark_points) + 3)
+    bottom = min(image.height, max(y for _, y in dark_points) + 3)
+    return image.crop((left, top, right, bottom))
 
 
 def _restore_static_region(rb, ws, rs, style_cache):
@@ -111,15 +181,17 @@ def _style_for_static_cell(rb, rs, style_cache, rowx, colx):
     return style_cache[xf_index]
 
 
-def _style_for_data_cell(rb, rs, style_cache, offset, total_rows, colx):
+def _style_for_data_cell(rb, rs, style_cache, offset, total_rows, colx, wrap_text=False):
     source_rowx = _source_data_row(offset, total_rows)
     xf_index = rs.cell_xf_index(source_rowx, colx)
     bottom_xf_index = None
     if total_rows <= 1:
         bottom_xf_index = rs.cell_xf_index(DATA_END_ROW, colx)
-    cache_key = (xf_index, bottom_xf_index)
+    cache_key = (xf_index, bottom_xf_index, wrap_text)
     if cache_key not in style_cache:
         style_cache[cache_key] = _clone_style_with_arial(rb, xf_index, bottom_xf_index)
+        if wrap_text:
+            style_cache[cache_key].alignment.wrap = 1
     return style_cache[cache_key]
 
 

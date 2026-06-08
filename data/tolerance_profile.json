@@ -1,18 +1,53 @@
 {
-  "source": "Project default tolerance profile derived from example.xls conventions",
+  "source": "Project default unspecified linear tolerance profile",
   "confidence": "medium",
-  "unit": "inch",
-  "tables": {
-    "linear_decimal": {
-      "2": {
-        "display": "±0.01(0.25)",
-        "plus": "0.01",
-        "minus": "0.01"
-      },
-      "3": {
-        "display": "±0.01(0.25)",
-        "plus": "0.01",
-        "minus": "0.01"
+  "unit_tables": {
+    "metric": {
+      "source": "Metric title-block note: unless otherwise specified tolerances by decimal places",
+      "confidence": "medium",
+      "tables": {
+        "linear_decimal": {
+          "0": {
+            "plus": "0.2",
+            "minus": "0.2"
+          },
+          "1": {
+            "plus": "0.1",
+            "minus": "0.1"
+          },
+          "2": {
+            "plus": "0.05",
+            "minus": "0.05"
+          },
+          "3": {
+            "plus": "0.005",
+            "minus": "0.005"
+          }
+        }
+      }
+    },
+    "inch": {
+      "source": "Inch title-block note: unless otherwise specified tolerances by decimal places",
+      "confidence": "medium",
+      "tables": {
+        "linear_decimal": {
+          "1": {
+            "plus": ".1",
+            "minus": ".1"
+          },
+          "2": {
+            "plus": ".01",
+            "minus": ".01"
+          },
+          "3": {
+            "plus": ".005",
+            "minus": ".005"
+          },
+          "4": {
+            "plus": ".001",
+            "minus": ".001"
+          }
+        }
       }
     }
   }

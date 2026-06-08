@@ -8,14 +8,14 @@ try:
     from equipment_resolver import resolve_equipment
     from fill_template import fill_template
     from location_parser import parse_location
-    from parse_specification import infer_unit_from_specification, parse_specification
+    from parse_specification import first_limit_tolerance_text, infer_unit_from_specification, parse_specification
     from snapshot_excel import snapshot_workbook
     from tolerance_resolver import resolve_tolerance
 except ImportError:
     from .equipment_resolver import resolve_equipment
     from .fill_template import fill_template
     from .location_parser import parse_location
-    from .parse_specification import infer_unit_from_specification, parse_specification
+    from .parse_specification import first_limit_tolerance_text, infer_unit_from_specification, parse_specification
     from .snapshot_excel import snapshot_workbook
     from .tolerance_resolver import resolve_tolerance
 
@@ -41,18 +41,27 @@ def run_pipeline(
     output_rows = []
 
     for item_index, source_row in enumerate(extraction["rows"], start=1):
-        parsed = parse_specification(
-            source_row.get("raw_specification", ""),
-            characteristic=source_row.get("characteristic", ""),
-            default_unit=source_row.get("unit", default_unit),
-            infer_unit="unit" not in source_row,
-        )
-        tolerance = resolve_tolerance(parsed, tolerance_profile=tolerance_profile)
-        equipment = resolve_equipment(
-            source_row.get("characteristic", ""),
-            source_row.get("raw_specification", ""),
-            parsed=parsed,
-        )
+        if source_row.get("specification_image"):
+            parsed = _image_passthrough_parsed(source_row)
+            tolerance = _image_passthrough_tolerance(parsed)
+            equipment = resolve_equipment(
+                "GD",
+                source_row.get("raw_specification", ""),
+                parsed={"kind": "gdt"},
+            )
+        else:
+            parsed = parse_specification(
+                source_row.get("raw_specification", ""),
+                characteristic=source_row.get("characteristic", ""),
+                default_unit=source_row.get("unit", default_unit),
+                infer_unit="unit" not in source_row,
+            )
+            tolerance = resolve_tolerance(parsed, tolerance_profile=tolerance_profile)
+            equipment = resolve_equipment(
+                source_row.get("characteristic", ""),
+                source_row.get("raw_specification", ""),
+                parsed=parsed,
+            )
         location = parse_location(source_row.get("location", ""))
         warnings = []
         warnings.extend(source_row.get("warnings", []))
@@ -72,6 +81,9 @@ def run_pipeline(
             "ipqc": "\u25cb",
             "ogqc": "\u25ce",
         }
+        if source_row.get("specification_image"):
+            output_row["specification_image"] = source_row["specification_image"]
+            output_row["specification_image_kind"] = source_row.get("specification_image_kind", "gd_frame")
 
         normalized_rows.append(
             {
@@ -114,6 +126,37 @@ def run_pipeline(
     )
     _write_json(debug_path, debug)
     return debug
+
+
+def _image_passthrough_parsed(source_row):
+    excel_tolerance = first_limit_tolerance_text(source_row.get("raw_specification", "")) or "-"
+    return {
+        "source_text": source_row.get("raw_specification", ""),
+        "normalized_text": source_row.get("raw_specification", ""),
+        "kind": "gdt_image",
+        "unit": "",
+        "nominal": "",
+        "tolerance": "",
+        "tolerance_type": "image_passthrough",
+        "metric_nominal": "",
+        "metric_tolerance": "",
+        "excel_specification": "\u200b",
+        "excel_tolerance": excel_tolerance,
+        "requires_default_tolerance": False,
+        "warnings": ["GD frame rendered from source image crop; text parser skipped."],
+        "characteristic": source_row.get("characteristic", ""),
+        "specification_image": source_row.get("specification_image", ""),
+    }
+
+
+def _image_passthrough_tolerance(parsed):
+    return {
+        "source": "image_passthrough",
+        "final_tolerance": parsed.get("excel_tolerance") or "-",
+        "confidence": "high",
+        "missing_evidence": [],
+        "rule": "GD frame crop contains displayed tolerance.",
+    }
 
 
 def _production_section(equipment):

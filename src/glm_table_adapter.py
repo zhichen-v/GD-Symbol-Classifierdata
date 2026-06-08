@@ -10,12 +10,17 @@ except ImportError:
 
 
 REQUIRED_HEADERS = ("LOCATION", "CHARACTERISTIC", "SPECIFICATION")
+COMBINED_SPECIFICATION_HEADER = "CHARACTERISTIC SPECIFICATION"
 OPTIONAL_HEADERS = ("SPC", "ACTUAL", "COMMENTS", "PASS", "FAIL", "INITIAL")
 HEADER_ALIASES = {
     "CHAR": "CHARACTERISTIC",
     "FEATURE": "CHARACTERISTIC",
     "SPEC": "SPECIFICATION",
     "REQUIREMENT": "SPECIFICATION",
+    "CHARACTERISTIC/SPECIFICATION": COMBINED_SPECIFICATION_HEADER,
+    "CHARACTERISTIC & SPECIFICATION": COMBINED_SPECIFICATION_HEADER,
+    "CHARACTERISTICS SPECIFICATION": COMBINED_SPECIFICATION_HEADER,
+    "CHARACTERISTIC SPECIFICATIONS": COMBINED_SPECIFICATION_HEADER,
 }
 
 
@@ -23,11 +28,13 @@ def convert_table_json_file(input_path, output_path=None, default_unit="auto"):
     input_path = Path(input_path)
     with input_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
+    image_assets = _load_image_assets(input_path)
 
     extraction, report = table_payload_to_extraction(
         payload,
         source_json=_display_path(input_path),
         default_unit=default_unit,
+        image_assets=image_assets,
     )
     if output_path:
         output_path = Path(output_path)
@@ -37,7 +44,7 @@ def convert_table_json_file(input_path, output_path=None, default_unit="auto"):
     return extraction, report
 
 
-def table_payload_to_extraction(payload, source_json=None, default_unit="auto"):
+def table_payload_to_extraction(payload, source_json=None, default_unit="auto", image_assets=None):
     if isinstance(payload, dict) and "rows" in payload:
         extraction, report = normalize_extraction(payload, source_image=source_json)
         return extraction, report
@@ -54,7 +61,7 @@ def table_payload_to_extraction(payload, source_json=None, default_unit="auto"):
 
     header = [_normalize_header(cell) for cell in _coerce_row(payload[0])]
     header_map = _header_map(header)
-    missing = [name for name in REQUIRED_HEADERS if name not in header_map]
+    missing = _missing_required_headers(header_map)
     if missing:
         raise ExtractionValidationError(
             {
@@ -67,22 +74,33 @@ def table_payload_to_extraction(payload, source_json=None, default_unit="auto"):
 
     rows = []
     warnings = []
+    image_assets_by_row = _image_assets_by_row(image_assets)
     for visual_index, raw_row in enumerate(payload[1:], start=1):
         values = _coerce_row(raw_row)
         if not any(value.strip() for value in values):
             continue
 
         row = _row_dict(header, values)
+        characteristic, raw_specification = _characteristic_and_specification(row)
         converted = {
             "source_index": visual_index,
             "location": row.get("LOCATION", ""),
-            "characteristic": row.get("CHARACTERISTIC", ""),
-            "raw_specification": row.get("SPECIFICATION", ""),
+            "characteristic": characteristic,
+            "raw_specification": raw_specification,
         }
         for header_name in OPTIONAL_HEADERS:
             converted[header_name.lower()] = row.get(header_name, "")
         if row.get("BUBBLE"):
             converted["bubble"] = row["BUBBLE"]
+        image_asset = image_assets_by_row.get(visual_index)
+        if image_asset:
+            converted["render_mode"] = "image"
+            converted["specification_image"] = image_asset["path"]
+            converted["specification_image_kind"] = image_asset.get("kind", "gd_frame")
+            converted["specification_image_bbox"] = image_asset.get("bbox", [])
+            converted.setdefault("warnings", []).append(
+                "GD frame will be rendered from source image crop."
+            )
         if "[GD_REVIEW_REQUIRED]" in converted["raw_specification"]:
             converted.setdefault("warnings", []).append(
                 "GD symbol classifier marked this row as review-required."
@@ -98,6 +116,87 @@ def table_payload_to_extraction(payload, source_json=None, default_unit="auto"):
     extraction, report = normalize_extraction(extraction)
     report["warnings"] = warnings + report.get("warnings", [])
     return extraction, report
+
+
+def _load_image_assets(input_path):
+    manifest_path = input_path.with_name(f"{input_path.stem}_image_assets.json")
+    if not manifest_path.is_file():
+        return []
+
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assets = []
+    for asset in payload.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        resolved = dict(asset)
+        path = _resolve_asset_path(manifest_path, asset)
+        if path:
+            resolved["path"] = str(path)
+        assets.append(resolved)
+    return assets
+
+
+def _resolve_asset_path(manifest_path, asset):
+    path = asset.get("path")
+    if not path:
+        return None
+    value = Path(path)
+    if value.is_absolute():
+        return value
+    directory = asset.get("directory")
+    if directory:
+        return manifest_path.parent / str(directory) / value
+    return manifest_path.parent / value
+
+
+def _image_assets_by_row(image_assets):
+    rows = {}
+    for asset in image_assets or []:
+        if asset.get("kind") != "gd_frame":
+            continue
+        try:
+            visual_index = int(asset.get("visual_index"))
+        except (TypeError, ValueError):
+            continue
+        rows[visual_index] = asset
+    return rows
+
+
+def _missing_required_headers(header_map):
+    missing = ["LOCATION"] if "LOCATION" not in header_map else []
+    has_separate_specification = "CHARACTERISTIC" in header_map and "SPECIFICATION" in header_map
+    has_combined_specification = COMBINED_SPECIFICATION_HEADER in header_map
+    if not has_separate_specification and not has_combined_specification:
+        missing.extend(["CHARACTERISTIC", "SPECIFICATION"])
+    return missing
+
+
+def _characteristic_and_specification(row):
+    characteristic = row.get("CHARACTERISTIC", "")
+    raw_specification = row.get("SPECIFICATION", "")
+    combined = row.get(COMBINED_SPECIFICATION_HEADER, "")
+    if combined:
+        if not raw_specification:
+            raw_specification = combined
+        if not characteristic:
+            characteristic = _infer_characteristic(combined)
+    return characteristic, raw_specification
+
+
+def _infer_characteristic(value):
+    text = " ".join(str(value or "").replace("\n", " ").upper().split())
+    if not text:
+        return ""
+    if "[GD_" in text or "GD&T" in text:
+        return "GD&T"
+    if any(term in text for term in ("SURFACE FINISH", "SURFACE ROUGHNESS", "ROUGHNESS", " RMS", " RA", " RZ")):
+        return "SURFACE FINISH"
+    if text.startswith("DIMENSION") or " DIAMETER" in text or "Ø" in text:
+        return "DIMENSION"
+    if text.startswith("TOLERANCE"):
+        return "TOLERANCE"
+    return text.split(maxsplit=1)[0]
 
 
 def _header_map(header):
