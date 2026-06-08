@@ -79,6 +79,8 @@ def normalize_spec_text(text):
         value = value.replace(old, new)
     value = _replace_gd_tags(value)
     value = value.replace("[M]", "(M)")
+    value = re.sub(r"(?i)\bE[O0]LSP\b", "EQLSP", value)
+    value = re.sub(rf"{re.escape(DIAMETER)}\s*,\s*(?=\d)", DIAMETER, value)
     value = _normalize_unilateral_text(value)
     value = _compact_spaced_digits(value)
     value = _normalize_unilateral_text(value)
@@ -510,7 +512,8 @@ def _parse_surface_roughness(text, characteristic):
 
 def _parse_linear(text, characteristic, unit):
     result = _base_result(text, "linear", unit)
-    unilateral = _unilateral_match(text, anchored=True)
+    core_text, trailing_note = _split_linear_trailing_note(text)
+    unilateral = _unilateral_match(core_text, anchored=True)
     if unilateral:
         prefix = _clean_prefix(unilateral.group("prefix"))
         nominal = unilateral.group("nom")
@@ -524,7 +527,10 @@ def _parse_linear(text, characteristic, unit):
                 "tolerance_type": "unilateral",
                 "metric_nominal": metric_value_text(nominal, unit, places=_metric_places(nominal)),
                 "metric_tolerance": f"{metric_value_text(plus[1:], unit, places=_metric_places(plus, is_tolerance=True))}/{metric_value_text(minus[1:], unit, places=_metric_places(minus, is_tolerance=True))}",
-                "excel_specification": _format_nominal(prefix, nominal, unit),
+                "excel_specification": _append_trailing_note(
+                    _format_nominal(prefix, nominal, unit),
+                    trailing_note,
+                ),
                 "excel_tolerance": excel_tolerance,
                 "requires_default_tolerance": False,
             }
@@ -533,7 +539,7 @@ def _parse_linear(text, characteristic, unit):
 
     bilateral = re.search(
         rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})(?P<degree>{DEGREE})?\s*{re.escape(PLUS_MINUS)}\s*(?P<tol>{NUMBER})(?:{DEGREE})?$",
-        text,
+        core_text,
     )
     if bilateral:
         prefix = _clean_prefix(bilateral.group("prefix"))
@@ -553,14 +559,17 @@ def _parse_linear(text, characteristic, unit):
                 "unit": value_unit,
                 "metric_nominal": metric_value_text(nominal, value_unit, places=_metric_places(nominal)),
                 "metric_tolerance": metric_value_text(tolerance, value_unit, places=_metric_places(tolerance, is_tolerance=True)),
-                "excel_specification": _format_nominal(prefix, nominal, value_unit, suffix=DEGREE if is_angle else ""),
+                "excel_specification": _append_trailing_note(
+                    _format_nominal(prefix, nominal, value_unit, suffix=DEGREE if is_angle else ""),
+                    trailing_note,
+                ),
                 "excel_tolerance": excel_tolerance,
                 "requires_default_tolerance": False,
             }
         )
         return result
 
-    nominal_match = re.search(rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})$", text)
+    nominal_match = re.search(rf"^(?P<prefix>.*?)(?P<nom>{NUMBER})$", core_text)
     if nominal_match:
         prefix = _clean_prefix(nominal_match.group("prefix"))
         nominal = nominal_match.group("nom")
@@ -568,7 +577,10 @@ def _parse_linear(text, characteristic, unit):
             {
                 "nominal": f"{prefix}{nominal}",
                 "metric_nominal": metric_value_text(nominal, unit, places=_metric_places(nominal)),
-                "excel_specification": _format_nominal(prefix, nominal, unit),
+                "excel_specification": _append_trailing_note(
+                    _format_nominal(prefix, nominal, unit),
+                    trailing_note,
+                ),
                 "excel_tolerance": "UNDETERMINED",
                 "requires_default_tolerance": True,
             }
@@ -586,6 +598,18 @@ def _parse_linear(text, characteristic, unit):
     )
     result["warnings"].append("Specification did not match a supported deterministic parser pattern.")
     return result
+
+
+def _split_linear_trailing_note(text):
+    match = re.search(r"(?i)^(?P<core>.+?)\s+(?P<note>THRU|EQLSP|EQ\s+SP)$", text)
+    if not match:
+        return text, ""
+    note = re.sub(r"\s+", " ", match.group("note").upper())
+    return match.group("core").strip(), note
+
+
+def _append_trailing_note(value, trailing_note):
+    return f"{value} {trailing_note}".strip()
 
 
 def _clean_prefix(prefix):

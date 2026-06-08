@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import re
 import sys
 
 import xlrd
@@ -244,9 +245,10 @@ def _validate_debug_conversions(debug, errors, warnings):
             nominal = parsed.get("nominal", "")
             if not nominal:
                 continue
-            number = "".join(ch for ch in nominal if ch.isdigit() or ch == ".")
-            if not number:
+            numbers = re.findall(r"(?:\d+\.\d+|\.\d+|\d+)", nominal)
+            if not numbers:
                 continue
+            number = numbers[-1]
             expected = float(number) * 25.4
             actual = float(parsed["metric_nominal"])
             if not math.isclose(expected, actual, rel_tol=0, abs_tol=0.001):
