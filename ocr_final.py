@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from dotenv import load_dotenv
 from PIL import Image, ImageOps
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
@@ -17,6 +18,8 @@ SYMBOL_CLASSIFIER_DIR = ROOT / "symbol-classifierdata"
 CLASSIFIER_CHECKPOINT = SYMBOL_CLASSIFIER_DIR / "output" / "best.pt"
 BASE_MODEL = "zai-org/GLM-OCR"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+load_dotenv(ROOT / ".env")
 
 if str(SYMBOL_CLASSIFIER_DIR) not in sys.path:
     sys.path.insert(0, str(SYMBOL_CLASSIFIER_DIR))
@@ -499,6 +502,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run full-table OCR with a GD&T symbol classifier.")
     parser.add_argument("--force", action="store_true", help="Regenerate outputs even when they are newer than input.")
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument(
+        "--download-base-model",
+        action="store_true",
+        help="Allow downloading GLM-OCR from Hugging Face when it is not already cached locally.",
+    )
     parser.add_argument("--symbol-classifier-checkpoint", type=Path, default=CLASSIFIER_CHECKPOINT)
     parser.add_argument("--symbol-classifier-threshold", type=float, default=0.90)
     parser.add_argument("--symbol-classifier-device", default="auto")
@@ -542,13 +550,17 @@ def main() -> int:
         print(f"Loading GD symbol classifier: {checkpoint_path}")
         symbol_classifier = load_symbol_classifier(checkpoint_path, args.symbol_classifier_device)
 
-    print("Loading base model...")
-    processor = AutoProcessor.from_pretrained(BASE_MODEL, local_files_only=True)
+    local_files_only = not args.download_base_model
+    if local_files_only:
+        print("Loading base model from local cache...")
+    else:
+        print("Loading base model; downloads are allowed if the cache is missing...")
+    processor = AutoProcessor.from_pretrained(BASE_MODEL, local_files_only=local_files_only)
     model = AutoModelForImageTextToText.from_pretrained(
         BASE_MODEL,
         dtype=torch.bfloat16,
         device_map="auto",
-        local_files_only=True,
+        local_files_only=local_files_only,
     )
     model.eval()
 

@@ -102,7 +102,13 @@ HF_XET_HIGH_PERFORMANCE=1
 
 ## 執行正式 OCR
 
-確認 `symbol-classifierdata/output/best.pt` 已存在後：
+若尚未安裝 `GLM-OCR` 請執行:
+
+```powershell
+.\.venv-finetune\Scripts\python.exe .\ocr_final.py --force --download-base-model
+```
+
+確認 `symbol-classifierdata/output/best.pt` 和 `GLM-OCR` 已存在後：
 
 ```powershell
 .\.venv-finetune\Scripts\python.exe .\ocr_final.py --force
