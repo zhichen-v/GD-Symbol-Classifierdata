@@ -59,7 +59,7 @@ def run_frontend_workflow(args: argparse.Namespace) -> dict[str, Any]:
     if ocr_code != 0:
         raise RuntimeError(f"ocr_final.py failed with code {ocr_code}")
 
-    json_paths = sorted(args.ocr_output_dir.rglob("*.json"))
+    json_paths = _workflow_json_paths(args.ocr_output_dir)
     if not json_paths:
         raise FileNotFoundError(f"OCR did not create JSON files in {args.ocr_output_dir}")
 
@@ -273,6 +273,10 @@ def _image_paths(input_dir: Path) -> list[Path]:
         for path in input_dir.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     )
+
+
+def _workflow_json_paths(ocr_output_dir: Path) -> list[Path]:
+    return sorted(path for path in ocr_output_dir.glob("*.json") if path.is_file())
 
 
 def emit_progress(progress: int, step: str, status: str = "running") -> None:
