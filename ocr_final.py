@@ -178,6 +178,17 @@ def normalize_symbol_crop(symbol: Image.Image, size: int = 128) -> Image.Image |
     return canvas
 
 
+def normalize_symbol_box(cell: Image.Image, box: tuple[int, int, int, int]) -> Image.Image | None:
+    left, top, right, bottom = box
+    left = max(0, int(left))
+    top = max(0, int(top))
+    right = min(cell.width, int(right))
+    bottom = min(cell.height, int(bottom))
+    if right - left < 3 or bottom - top < 3:
+        return None
+    return normalize_symbol_crop(cell.crop((left, top, right, bottom)))
+
+
 def symbol_crop_insets(frame_height: int) -> list[tuple[int, int, int, int]]:
     edge_inset = max(1, round(frame_height * 0.08))
     left_inset = max(2, round(frame_height * 0.16))
@@ -188,7 +199,7 @@ def symbol_crop_insets(frame_height: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
-def crop_gd_symbol(cell: Image.Image) -> Image.Image | None:
+def crop_gd_symbol(cell: Image.Image) -> tuple[Image.Image, str] | None:
     grayscale = np.asarray(cell.convert("L"))
     dark = grayscale < 190
     height, width = dark.shape
@@ -242,14 +253,223 @@ def crop_gd_symbol(cell: Image.Image) -> Image.Image | None:
                     if crop_box[2] - crop_box[0] < 3 or crop_box[3] - crop_box[1] < 3:
                         continue
 
-                    normalized = normalize_symbol_crop(cell.crop(crop_box))
+                    normalized = normalize_symbol_box(cell, crop_box)
                     if normalized:
-                        candidates.append((abs(aspect_ratio - 1.4), normalized))
+                        candidates.append((abs(aspect_ratio - 1.4), normalized, "closed_frame"))
                         break
+
+    if candidates:
+        best = min(candidates, key=lambda candidate: candidate[0])
+        return best[1], best[2]
+
+    return crop_gd_symbol_from_partial_frame(
+        cell,
+        dark,
+        horizontal_lines,
+        height,
+        minimum_line_width,
+    )
+
+
+def crop_gd_symbol_from_partial_frame(
+    cell: Image.Image,
+    dark: np.ndarray,
+    horizontal_lines: list[tuple[int, int, int]],
+    height: int,
+    minimum_line_width: int,
+) -> tuple[Image.Image, str] | None:
+    candidates = []
+    for top, frame_left, frame_right in horizontal_lines:
+        if frame_right - frame_left + 1 < minimum_line_width:
+            continue
+
+        search_bottom = min(height, top + min(80, max(12, round(height * 0.85))))
+        band = dark[top:search_bottom, frame_left : frame_right + 1]
+        dark_y, _ = np.where(band)
+        if not len(dark_y):
+            continue
+
+        frame_bottom = top + int(dark_y.max())
+        frame_height = frame_bottom - top + 1
+        if frame_height < 8 or frame_height > min(80, round(height * 0.85)):
+            continue
+
+        verticals = partial_frame_verticals(dark, top, frame_bottom, frame_left, frame_right)
+        if len(verticals) < 2:
+            continue
+
+        left = verticals[0]
+        if abs(left - frame_left) > max(3, round(frame_height * 0.25)):
+            continue
+
+        for separator in verticals[1:]:
+            compartment_width = separator - left
+            aspect_ratio = compartment_width / frame_height
+            if not 0.4 <= aspect_ratio <= 2.2:
+                continue
+
+            for left_inset, top_inset, right_inset, bottom_inset in symbol_crop_insets(frame_height):
+                crop_box = (
+                    left + left_inset,
+                    top + top_inset,
+                    separator - right_inset,
+                    frame_bottom - bottom_inset,
+                )
+                normalized = normalize_symbol_box(cell, crop_box)
+                if normalized:
+                    candidates.append((abs(aspect_ratio - 1.4) + 0.25, normalized, "partial_frame"))
+                    break
+            break
 
     if not candidates:
         return None
-    return min(candidates, key=lambda candidate: candidate[0])[1]
+    best = min(candidates, key=lambda candidate: candidate[0])
+    return best[1], best[2]
+
+
+def partial_frame_verticals(
+    dark: np.ndarray,
+    top: int,
+    bottom: int,
+    left: int,
+    right: int,
+) -> list[int]:
+    frame = dark[top : bottom + 1, left : right + 1]
+    if frame.size == 0:
+        return []
+
+    vertical_coverage = frame.mean(axis=0)
+    centers = true_run_centers(vertical_coverage >= 0.55)
+    return [left + center for center in centers]
+
+
+def classifier_guided_symbol_crop(
+    cell: Image.Image,
+    symbol_classifier: dict,
+) -> dict | None:
+    candidates = classifier_guided_symbol_candidates(cell)
+    best = None
+    for box in candidates:
+        symbol = normalize_symbol_box(cell, box)
+        if symbol is None:
+            continue
+        predictions = predict_symbol(symbol, symbol_classifier)
+        score, positive_confidence = classifier_guided_score(predictions)
+        if positive_confidence < 0.35:
+            continue
+        if best is None or score > best["score"]:
+            best = {
+                "score": score,
+                "symbol": symbol,
+                "top_predictions": predictions,
+                "crop_source": "classifier_guided",
+            }
+    return best
+
+
+def classifier_guided_symbol_candidates(cell: Image.Image) -> list[tuple[int, int, int, int]]:
+    grayscale = np.asarray(cell.convert("L"))
+    dark = grayscale < 190
+    height, width = dark.shape
+    dark_y, dark_x = np.where(dark)
+    if not len(dark_x):
+        return []
+
+    content_left = int(dark_x.min())
+    content_top = int(dark_y.min())
+    content_bottom = int(dark_y.max()) + 1
+    frame_height = max(8, content_bottom - content_top)
+    candidates = []
+    seen = set()
+
+    def add_box(box: tuple[int, int, int, int]) -> None:
+        left, top, right, bottom = box
+        box = (
+            max(0, left),
+            max(0, top),
+            min(width, right),
+            min(height, bottom),
+        )
+        if box[2] - box[0] < 3 or box[3] - box[1] < 3:
+            return
+        key = tuple(round(value / 2) for value in box)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(box)
+
+    for box in horizontal_frame_candidate_boxes(dark, height, width):
+        add_box(box)
+
+    max_symbol_width = max(10, round(frame_height * 2.2))
+    x_limit = min(width, content_left + max_symbol_width)
+    for x_offset in (0, -2, 2, 4):
+        left = content_left + x_offset
+        for y_offset in (-2, 0, 2):
+            top = content_top + y_offset
+            bottom = content_bottom + y_offset
+            for scale in (0.9, 1.2, 1.5, 1.8, 2.1):
+                right = min(x_limit, left + round(frame_height * scale))
+                add_box((left, top, right, bottom))
+
+    return candidates[:80]
+
+
+def horizontal_frame_candidate_boxes(
+    dark: np.ndarray,
+    height: int,
+    width: int,
+) -> list[tuple[int, int, int, int]]:
+    minimum_line_width = max(10, round(width * 0.06))
+    boxes = []
+    for y in range(height):
+        run = longest_true_run(dark[y])
+        if not run or run[1] - run[0] + 1 < minimum_line_width:
+            continue
+        frame_left, frame_right = run
+        search_bottom = min(height, y + min(80, max(12, round(height * 0.85))))
+        band = dark[y:search_bottom, frame_left : frame_right + 1]
+        dark_y, _ = np.where(band)
+        if not len(dark_y):
+            continue
+        frame_bottom = y + int(dark_y.max()) + 1
+        frame_height = max(8, frame_bottom - y)
+        for x_offset in (0, -2, 2):
+            left = frame_left + x_offset
+            for scale in (0.8, 1.1, 1.4, 1.7, 2.0):
+                right = left + round(frame_height * scale)
+                boxes.append((left, y, right, frame_bottom))
+    return boxes
+
+
+def classifier_guided_score(predictions: list[dict[str, float | str]]) -> tuple[float, float]:
+    positive_confidence = 0.0
+    unknown_confidence = 0.0
+    for prediction in predictions:
+        confidence = float(prediction["confidence"])
+        label = str(prediction["label"])
+        if label == "UNKNOWN":
+            unknown_confidence = confidence
+        elif gd_tag_for_classifier_label(label) is not None:
+            positive_confidence = max(positive_confidence, confidence)
+    return positive_confidence - (unknown_confidence * 0.25), positive_confidence
+
+
+def predict_symbol(symbol: Image.Image, symbol_classifier: dict) -> list[dict[str, float | str]]:
+    inputs = symbol_classifier["transform"](symbol).unsqueeze(0).to(symbol_classifier["device"])
+    with torch.inference_mode():
+        probabilities = torch.softmax(symbol_classifier["model"](inputs), dim=1)[0].cpu()
+
+    classes = symbol_classifier["classes"]
+    top_count = min(5, len(classes))
+    top_values, top_indices = torch.topk(probabilities, k=top_count)
+    return [
+        {
+            "label": classes[int(index)],
+            "confidence": float(value),
+        }
+        for value, index in zip(top_values, top_indices)
+    ]
 
 
 def has_text(cell: Image.Image) -> bool:
@@ -344,30 +564,31 @@ def classify_gd_tag(
     symbol_classifier: dict,
     threshold: float,
 ) -> dict:
-    symbol = crop_gd_symbol(cell)
+    crop_result = crop_gd_symbol(cell)
+    symbol = None
+    crop_source = None
+    predictions = None
+    if crop_result is not None:
+        symbol, crop_source = crop_result
+    else:
+        guided = classifier_guided_symbol_crop(cell, symbol_classifier)
+        if guided is not None:
+            symbol = guided["symbol"]
+            crop_source = guided["crop_source"]
+            predictions = guided["top_predictions"]
+
     if symbol is None:
         return {
             "tag": None,
             "message": "symbol crop not found",
             "reason": "symbol_crop_not_found",
             "symbol": None,
+            "crop_source": None,
             "top_predictions": [],
         }
 
-    inputs = symbol_classifier["transform"](symbol).unsqueeze(0).to(symbol_classifier["device"])
-    with torch.inference_mode():
-        probabilities = torch.softmax(symbol_classifier["model"](inputs), dim=1)[0].cpu()
-
-    classes = symbol_classifier["classes"]
-    top_count = min(5, len(classes))
-    top_values, top_indices = torch.topk(probabilities, k=top_count)
-    predictions = [
-        {
-            "label": classes[int(index)],
-            "confidence": float(value),
-        }
-        for value, index in zip(top_values, top_indices)
-    ]
+    if predictions is None:
+        predictions = predict_symbol(symbol, symbol_classifier)
     top1 = predictions[0]
     detail = classifier_detail(predictions)
 
@@ -377,6 +598,7 @@ def classify_gd_tag(
             "message": f"classifier below threshold ({detail})",
             "reason": "below_threshold",
             "symbol": symbol,
+            "crop_source": crop_source,
             "top_predictions": predictions,
         }
 
@@ -387,6 +609,7 @@ def classify_gd_tag(
             "message": f"classifier rejected ({detail})",
             "reason": "unknown",
             "symbol": symbol,
+            "crop_source": crop_source,
             "top_predictions": predictions,
         }
     return {
@@ -394,6 +617,7 @@ def classify_gd_tag(
         "message": detail,
         "reason": "accepted",
         "symbol": symbol,
+        "crop_source": crop_source,
         "top_predictions": predictions,
     }
 
@@ -424,6 +648,7 @@ def write_classifier_debug(
         "specification": specification,
         "reason": classification.get("reason"),
         "message": classification.get("message"),
+        "crop_source": classification.get("crop_source"),
         "top_predictions": classification.get("top_predictions", []),
         "spec_cell_image": cell_name,
         "symbol_crop_image": symbol_name,
