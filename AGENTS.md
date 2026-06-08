@@ -74,6 +74,13 @@ Current categories:
 - For a complete frame, keep every visible element, for example `[GD_POSITION] Ø0.1 [M] A B C`.
 - If an image is in the wrong category, move the image, OCR output, and corrected label together. Avoid overwriting an existing filename.
 
+## Final Excel Tolerance Rules
+
+- Final Excel tolerance output must show both positive and negative tolerance sides for unilateral tolerances.
+- Preserve `±` for bilateral tolerances because it already represents both positive and negative sides.
+- If only a positive tolerance is present, append the zero negative side, for example `+0.2/-0`.
+- If only a negative tolerance is present, prepend the zero positive side, for example `+0/-0.2`.
+
 ## Standard Data Workflow
 
 ```powershell

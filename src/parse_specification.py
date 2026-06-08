@@ -617,12 +617,12 @@ def _format_gdt_tolerance(text):
 
 
 def _format_unilateral_tolerance(plus, minus, unit):
-    parts = []
-    if not _is_zero_text(plus):
-        parts.append(_format_signed_tolerance(plus, unit))
-    if not _is_zero_text(minus):
-        parts.append(_format_signed_tolerance(minus, unit))
-    return "/".join(parts) if parts else "-"
+    return "/".join(
+        (
+            _format_signed_tolerance(plus, unit),
+            _format_signed_tolerance(minus, unit),
+        )
+    )
 
 
 def _is_zero_text(text):
@@ -632,6 +632,8 @@ def _is_zero_text(text):
 def _format_signed_tolerance(text, unit):
     sign = text[0]
     number_text = text[1:]
+    if _is_zero_text(text):
+        return f"{sign}0"
     if unit != "inch":
         return text
     return f"{sign}{number_text}({inch_to_metric_text(number_text, places=_metric_places(text, is_tolerance=True))})"

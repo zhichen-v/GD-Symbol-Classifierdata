@@ -127,13 +127,15 @@ final-table/output/test/extraction_debug.json
 - `\mu`、`/mu` 轉成 `µ`。
 - LaTeX 上下標公差，例如 `^{+0.05}`、`_{0}^{3+0.01}`，會攤平成 parser 可處理的 unilateral tolerance。
 - `17.9 0/-0.04`、`0.50/-0.04` 會拆成 specification 與 tolerance。
+- 單邊公差輸出一定補齊正負兩側：`+0.2` 會輸出 `+0.2/-0`，`-0.2` 會輸出 `+0/-0.2`。`±0.2` 本身已表示正負兩側，維持 `±0.2`。
 
 例子：
 
 ```text
 [GD_POSITION] 0.02 A B C  ->  ⌖ 0.02 A B C
 6X Ø 0.3 $ \pm 0.05 $    ->  specification: 6X Ø0.3, tolerance: ±0.05
-17.9 0/-0.04             ->  specification: 17.9, tolerance: -0.04
+17.9 0/-0.04             ->  specification: 17.9, tolerance: +0/-0.04
+2X 1.5 +0.02/0           ->  specification: 2X1.5, tolerance: +0.02/-0
 ```
 
 ## Symbol Classifier
