@@ -158,6 +158,10 @@ def main() -> int:
         return 0
 
     device = select_device(args.device)
+    print(f"Device: {device}")
+    if device.type == "cuda":
+        print(f"CUDA device: {torch.cuda.get_device_name(device)}")
+        torch.cuda.reset_peak_memory_stats(device)
     model = create_model(args.model, len(classes), pretrained=args.pretrained).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -203,6 +207,9 @@ def main() -> int:
             )
 
     elapsed_seconds = time.time() - start_time
+    cuda_peak_memory_mib = None
+    if device.type == "cuda":
+        cuda_peak_memory_mib = torch.cuda.max_memory_allocated(device) / 1024 / 1024
     save_json(
         output_dir / "train_metrics.json",
         {
@@ -214,6 +221,7 @@ def main() -> int:
             "weight_decay": args.weight_decay,
             "seed": args.seed,
             "device": str(device),
+            "cuda_peak_memory_mib": cuda_peak_memory_mib,
             "class_count": len(classes),
             "best_val_accuracy": best_accuracy,
             "elapsed_seconds": elapsed_seconds,
@@ -222,6 +230,8 @@ def main() -> int:
     )
     print(f"Saved best checkpoint: {output_dir / 'best.pt'}")
     print(f"Saved metrics: {output_dir / 'train_metrics.json'}")
+    if cuda_peak_memory_mib is not None:
+        print(f"CUDA peak memory: {cuda_peak_memory_mib:.1f} MiB")
     return 0
 
 
