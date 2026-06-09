@@ -31,6 +31,7 @@ Desktop.ini
 # Legacy local OCR training data
 ocr-input/
 ocr-output/
+tests/
 
 # Generated final-table OCR outputs
 final-table/output/

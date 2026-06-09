@@ -105,6 +105,12 @@ def detect_grid(image: Image.Image) -> tuple[list[int], list[int]]:
     x_lines = merge_close_lines(group_line_centers(dark_pixels.mean(axis=0), minimum_coverage=0.7))
     y_lines = merge_close_lines(group_line_centers(dark_pixels.mean(axis=1), minimum_coverage=0.7))
     if len(x_lines) < 3 or len(y_lines) < 3:
+        background = int(np.percentile(grayscale, 90))
+        light_line_threshold = min(250, max(150, background - 5))
+        light_lines = grayscale < light_line_threshold
+        x_lines = merge_close_lines(group_line_centers(light_lines.mean(axis=0), minimum_coverage=0.8))
+        y_lines = merge_close_lines(group_line_centers(light_lines.mean(axis=1), minimum_coverage=0.8))
+    if len(x_lines) < 3 or len(y_lines) < 3:
         raise ValueError(
             f"Could not detect a table grid: {len(x_lines)} vertical and {len(y_lines)} horizontal lines."
         )
@@ -275,8 +281,16 @@ def crop_gd_symbol(cell: Image.Image) -> tuple[Image.Image, str] | None:
 
 
 def crop_gd_frame(cell: Image.Image) -> tuple[Image.Image, dict] | None:
+    for threshold in (190, 205, 215, 225, 235):
+        result = _crop_gd_frame_at_threshold(cell, threshold)
+        if result:
+            return result
+    return None
+
+
+def _crop_gd_frame_at_threshold(cell: Image.Image, threshold: int) -> tuple[Image.Image, dict] | None:
     grayscale = np.asarray(cell.convert("L"))
-    dark = grayscale < 190
+    dark = grayscale < threshold
     height, width = dark.shape
     minimum_line_width = max(10, round(width * 0.08))
 
