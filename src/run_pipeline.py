@@ -42,7 +42,10 @@ def run_pipeline(
 
     for item_index, source_row in enumerate(extraction["rows"], start=1):
         if source_row.get("specification_image"):
-            parsed = _image_passthrough_parsed(source_row)
+            parsed = _image_passthrough_parsed(
+                source_row,
+                unit=default_unit,
+            )
             tolerance = _image_passthrough_tolerance(parsed)
             equipment = resolve_equipment(
                 "GD",
@@ -53,8 +56,8 @@ def run_pipeline(
             parsed = parse_specification(
                 source_row.get("raw_specification", ""),
                 characteristic=source_row.get("characteristic", ""),
-                default_unit=source_row.get("unit", default_unit),
-                infer_unit="unit" not in source_row,
+                default_unit=default_unit,
+                infer_unit=False,
             )
             tolerance = resolve_tolerance(parsed, tolerance_profile=tolerance_profile)
             equipment = resolve_equipment(
@@ -128,13 +131,13 @@ def run_pipeline(
     return debug
 
 
-def _image_passthrough_parsed(source_row):
-    excel_tolerance = first_limit_tolerance_text(source_row.get("raw_specification", "")) or "-"
+def _image_passthrough_parsed(source_row, unit=""):
+    excel_tolerance = first_limit_tolerance_text(source_row.get("raw_specification", ""), unit=unit) or "-"
     return {
         "source_text": source_row.get("raw_specification", ""),
         "normalized_text": source_row.get("raw_specification", ""),
         "kind": "gdt_image",
-        "unit": "",
+        "unit": unit,
         "nominal": "",
         "tolerance": "",
         "tolerance_type": "image_passthrough",
@@ -172,6 +175,8 @@ def _default_unit(configured_default_unit, rows):
 
     counts = {"inch": 0, "metric": 0}
     for row in rows:
+        if row.get("specification_image"):
+            continue
         unit = infer_unit_from_specification(
             row.get("raw_specification", ""),
             characteristic=row.get("characteristic", ""),
@@ -179,9 +184,7 @@ def _default_unit(configured_default_unit, rows):
         if unit in counts:
             counts[unit] += 1
 
-    if counts["inch"] or counts["metric"]:
-        return "inch" if counts["inch"] >= counts["metric"] else "metric"
-    return "inch"
+    return "inch" if counts["inch"] > counts["metric"] else "metric"
 
 
 def _effective_parse_warnings(parsed, tolerance):

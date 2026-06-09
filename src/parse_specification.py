@@ -250,13 +250,14 @@ def infer_unit_from_specification(raw_specification, characteristic=""):
     if _is_surface_roughness(char, text) or _is_thread(text, char):
         return None
 
-    tolerance_tokens = _tolerance_tokens(text, char)
+    core_text, _ = _split_linear_trailing_note(text)
+    tolerance_tokens = _tolerance_tokens(core_text, char)
     for token in tolerance_tokens:
         unit = _unit_from_number_token(token)
         if unit:
             return unit
 
-    nominal = _nominal_token(text)
+    nominal = _nominal_token(core_text)
     if nominal and nominal.startswith("."):
         return "inch"
     return None
@@ -288,6 +289,12 @@ def _tolerance_tokens(text, characteristic):
         if DEGREE in unilateral.group(0):
             return []
         return [_unilateral_plus(unilateral), unilateral.group("minus")]
+
+    single_sided = _single_sided_tolerance_match(text)
+    if single_sided:
+        if DEGREE in single_sided.group(0):
+            return []
+        return [single_sided.group("tol")]
 
     if _is_gdt(characteristic, text):
         tokens = _gdt_tokens(text, _gdt_symbol(characteristic, text))

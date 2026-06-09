@@ -27,7 +27,7 @@ COL_OGQC = 7
 COL_EQUIPMENT = 8
 COL_PRODUCTION = 9
 
-SPECIFICATION_IMAGE_CELL_SCALE = 0.7
+SPECIFICATION_IMAGE_CELL_SCALE = 0.55
 
 
 def fill_template(template_path, output_rows, output_path):
